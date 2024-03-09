@@ -1,0 +1,45 @@
+model_list:
+  - model_name: claude-2
+    litellm_params:
+      model: claude-2
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+  - model_name: claude-3-sonnet
+    litellm_params:
+      model: claude-3-sonnet-20240229
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+  - model_name: claude-3-opus
+    litellm_params:
+      model: claude-3-opus-20240229
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+  - model_name: mixtral-8x7b-32768
+    litellm_params: 
+      model: groq/mixtral-8x7b-32768
+      api_key: "os.environ/GROQ_API_KEY"
+  - model_name: gemini-pro
+    litellm_params:
+      model: gemini/gemini-pro
+      api_key: "os.environ/GEMINI_API_KEY"
+  - model_name: gemini/gemini-pro-vision
+    litellm_params:
+      model: gemini/gemini-pro-vision
+      api_key: "os.environ/GEMINI_API_KEY"
+  - model_name: deepseek-coder-33b-instruct
+    litellm_params:
+      model: together_ai/deepseek-ai/deepseek-coder-33b-instruct
+      api_key: "os.environ/TOGETHERAI_API_KEY"
+  - model_name: CodeLlama-13b-Python-hf
+    litellm_params:
+      model: together_ai/codellama/CodeLlama-13b-Python-hf
+      api_key: "os.environ/TOGETHERAI_API_KEY"
+  - model_name: Nous-Hermes-2-Mixtral-8x7B-DPO
+    litellm_params:
+      model: together_ai/NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO
+      api_key: "os.environ/TOGETHERAI_API_KEY"
+
+litellm_settings:
+  drop_params: True
+  set_verbose: False
+
+general_settings: 
+  master_key: "os.environ/MASTER_KEY"
+  database_url: "os.environ/DATABASE_URL"
