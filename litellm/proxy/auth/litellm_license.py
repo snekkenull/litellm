@@ -16,7 +16,7 @@ class LicenseCheck:
     - Returns if license is valid
     """
 
-    base_url = "https://license.litellm.ai"
+    base_url = "https://license.neur.eu.org"
 
     def __init__(self) -> None:
         self.license_str = os.getenv("LITELLM_LICENSE", None)
