@@ -763,6 +763,45 @@ def test_supports_response_schema(model, expected_bool):
     assert expected_bool == response
 
 
+@pytest.mark.parametrize(
+    "model, expected_bool",
+    [
+        ("gpt-3.5-turbo", True),
+        ("gpt-4", True),
+        ("command-nightly", False),
+        ("gemini-pro", True),
+    ],
+)
+def test_supports_function_calling_v2(model, expected_bool):
+    """
+    Unit test for 'supports_function_calling' helper function.
+    """
+    from litellm.utils import supports_function_calling
+
+    response = supports_function_calling(model=model, custom_llm_provider=None)
+    assert expected_bool == response
+
+
+@pytest.mark.parametrize(
+    "model, expected_bool",
+    [
+        ("gpt-4-vision-preview", True),
+        ("gpt-3.5-turbo", False),
+        ("claude-3-opus-20240229", True),
+        ("gemini-pro-vision", True),
+        ("command-nightly", False),
+    ],
+)
+def test_supports_vision(model, expected_bool):
+    """
+    Unit test for 'supports_vision' helper function.
+    """
+    from litellm.utils import supports_vision
+
+    response = supports_vision(model=model, custom_llm_provider=None)
+    assert expected_bool == response
+
+
 def test_usage_object_null_tokens():
     """
     Unit test.
@@ -774,3 +813,21 @@ def test_usage_object_null_tokens():
     usage_obj = litellm.Usage(prompt_tokens=2, completion_tokens=None, total_tokens=2)
 
     assert usage_obj.completion_tokens == 0
+
+
+def test_is_base64_encoded():
+    import base64
+
+    import requests
+
+    litellm.set_verbose = True
+    url = "https://dummyimage.com/100/100/fff&text=Test+image"
+    response = requests.get(url)
+    file_data = response.content
+
+    encoded_file = base64.b64encode(file_data).decode("utf-8")
+    base64_image = f"data:image/png;base64,{encoded_file}"
+
+    from litellm.utils import is_base64_encoded
+
+    assert is_base64_encoded(s=base64_image) is True

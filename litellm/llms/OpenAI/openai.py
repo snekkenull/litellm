@@ -31,6 +31,7 @@ from litellm.utils import (
 from ...types.llms.openai import *
 from ..base import BaseLLM
 from ..prompt_templates.factory import custom_prompt, prompt_factory
+from .common_utils import drop_params_from_unprocessable_entity_error
 
 
 class OpenAIError(Exception):
@@ -101,25 +102,6 @@ class MistralEmbeddingConfig:
             if param == "encoding_format":
                 optional_params["encoding_format"] = value
         return optional_params
-
-
-class AzureAIStudioConfig:
-    def get_required_params(self) -> List[ProviderField]:
-        """For a given provider, return it's required fields with a description"""
-        return [
-            ProviderField(
-                field_name="api_key",
-                field_type="string",
-                field_description="Your Azure AI Studio API Key.",
-                field_value="zEJ...",
-            ),
-            ProviderField(
-                field_name="api_base",
-                field_type="string",
-                field_description="Your Azure AI Studio API Base.",
-                field_value="https://Mistral-serverless.",
-            ),
-        ]
 
 
 class DeepInfraConfig:
@@ -238,104 +220,6 @@ class DeepInfraConfig:
         return optional_params
 
 
-class GroqConfig:
-    """
-    Reference: https://deepinfra.com/docs/advanced/openai_api
-
-    The class `DeepInfra` provides configuration for the DeepInfra's Chat Completions API interface. Below are the parameters:
-    """
-
-    frequency_penalty: Optional[int] = None
-    function_call: Optional[Union[str, dict]] = None
-    functions: Optional[list] = None
-    logit_bias: Optional[dict] = None
-    max_tokens: Optional[int] = None
-    n: Optional[int] = None
-    presence_penalty: Optional[int] = None
-    stop: Optional[Union[str, list]] = None
-    temperature: Optional[int] = None
-    top_p: Optional[int] = None
-    response_format: Optional[dict] = None
-    tools: Optional[list] = None
-    tool_choice: Optional[Union[str, dict]] = None
-
-    def __init__(
-        self,
-        frequency_penalty: Optional[int] = None,
-        function_call: Optional[Union[str, dict]] = None,
-        functions: Optional[list] = None,
-        logit_bias: Optional[dict] = None,
-        max_tokens: Optional[int] = None,
-        n: Optional[int] = None,
-        presence_penalty: Optional[int] = None,
-        stop: Optional[Union[str, list]] = None,
-        temperature: Optional[int] = None,
-        top_p: Optional[int] = None,
-        response_format: Optional[dict] = None,
-        tools: Optional[list] = None,
-        tool_choice: Optional[Union[str, dict]] = None,
-    ) -> None:
-        locals_ = locals().copy()
-        for key, value in locals_.items():
-            if key != "self" and value is not None:
-                setattr(self.__class__, key, value)
-
-    @classmethod
-    def get_config(cls):
-        return {
-            k: v
-            for k, v in cls.__dict__.items()
-            if not k.startswith("__")
-            and not isinstance(
-                v,
-                (
-                    types.FunctionType,
-                    types.BuiltinFunctionType,
-                    classmethod,
-                    staticmethod,
-                ),
-            )
-            and v is not None
-        }
-
-    def get_supported_openai_params_stt(self):
-        return [
-            "prompt",
-            "response_format",
-            "temperature",
-            "language",
-        ]
-
-    def get_supported_openai_response_formats_stt(self) -> List[str]:
-        return ["json", "verbose_json", "text"]
-
-    def map_openai_params_stt(
-        self,
-        non_default_params: dict,
-        optional_params: dict,
-        model: str,
-        drop_params: bool,
-    ) -> dict:
-        response_formats = self.get_supported_openai_response_formats_stt()
-        for param, value in non_default_params.items():
-            if param == "response_format":
-                if value in response_formats:
-                    optional_params[param] = value
-                else:
-                    if litellm.drop_params is True or drop_params is True:
-                        pass
-                    else:
-                        raise litellm.utils.UnsupportedParamsError(
-                            message="Groq doesn't support response_format={}. To drop unsupported openai params from the call, set `litellm.drop_params = True`".format(
-                                value
-                            ),
-                            status_code=400,
-                        )
-            else:
-                optional_params[param] = value
-        return optional_params
-
-
 class OpenAIConfig:
     """
     Reference: https://platform.openai.com/docs/api-reference/chat/create
@@ -432,7 +316,11 @@ class OpenAIConfig:
         return optional_params
 
     def map_openai_params(
-        self, non_default_params: dict, optional_params: dict, model: str
+        self,
+        non_default_params: dict,
+        optional_params: dict,
+        model: str,
+        drop_params: bool,
     ) -> dict:
         """ """
         if litellm.OpenAIO1Config().is_model_o1_reasoning_model(model=model):
@@ -440,11 +328,13 @@ class OpenAIConfig:
                 non_default_params=non_default_params,
                 optional_params=optional_params,
                 model=model,
+                drop_params=drop_params,
             )
         return litellm.OpenAIGPTConfig().map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,
             model=model,
+            drop_params=drop_params,
         )
 
 
@@ -844,27 +734,9 @@ class OpenAIChatCompletion(BaseLLM):
                 except openai.UnprocessableEntityError as e:
                     ## check if body contains unprocessable params - related issue https://github.com/BerriAI/litellm/issues/4800
                     if litellm.drop_params is True or drop_params is True:
-                        invalid_params: List[str] = []
-                        if e.body is not None and isinstance(e.body, dict) and e.body.get("detail"):  # type: ignore
-                            detail = e.body.get("detail")  # type: ignore
-                            if (
-                                isinstance(detail, List)
-                                and len(detail) > 0
-                                and isinstance(detail[0], dict)
-                            ):
-                                for error_dict in detail:
-                                    if (
-                                        error_dict.get("loc")
-                                        and isinstance(error_dict.get("loc"), list)
-                                        and len(error_dict.get("loc")) == 2
-                                    ):
-                                        invalid_params.append(error_dict["loc"][1])
-
-                        new_data = {}
-                        for k, v in optional_params.items():
-                            if k not in invalid_params:
-                                new_data[k] = v
-                        optional_params = new_data
+                        optional_params = drop_params_from_unprocessable_entity_error(
+                            e, optional_params
+                        )
                     else:
                         raise e
                     # e.message
@@ -980,27 +852,7 @@ class OpenAIChatCompletion(BaseLLM):
             except openai.UnprocessableEntityError as e:
                 ## check if body contains unprocessable params - related issue https://github.com/BerriAI/litellm/issues/4800
                 if litellm.drop_params is True or drop_params is True:
-                    invalid_params: List[str] = []
-                    if e.body is not None and isinstance(e.body, dict) and e.body.get("detail"):  # type: ignore
-                        detail = e.body.get("detail")  # type: ignore
-                        if (
-                            isinstance(detail, List)
-                            and len(detail) > 0
-                            and isinstance(detail[0], dict)
-                        ):
-                            for error_dict in detail:
-                                if (
-                                    error_dict.get("loc")
-                                    and isinstance(error_dict.get("loc"), list)
-                                    and len(error_dict.get("loc")) == 2
-                                ):
-                                    invalid_params.append(error_dict["loc"][1])
-
-                    new_data = {}
-                    for k, v in data.items():
-                        if k not in invalid_params:
-                            new_data[k] = v
-                    data = new_data
+                    data = drop_params_from_unprocessable_entity_error(e, data)
                 else:
                     raise e
                 # e.message
@@ -1119,27 +971,7 @@ class OpenAIChatCompletion(BaseLLM):
             except openai.UnprocessableEntityError as e:
                 ## check if body contains unprocessable params - related issue https://github.com/BerriAI/litellm/issues/4800
                 if litellm.drop_params is True or drop_params is True:
-                    invalid_params: List[str] = []
-                    if e.body is not None and isinstance(e.body, dict) and e.body.get("detail"):  # type: ignore
-                        detail = e.body.get("detail")  # type: ignore
-                        if (
-                            isinstance(detail, List)
-                            and len(detail) > 0
-                            and isinstance(detail[0], dict)
-                        ):
-                            for error_dict in detail:
-                                if (
-                                    error_dict.get("loc")
-                                    and isinstance(error_dict.get("loc"), list)
-                                    and len(error_dict.get("loc")) == 2
-                                ):
-                                    invalid_params.append(error_dict["loc"][1])
-
-                    new_data = {}
-                    for k, v in data.items():
-                        if k not in invalid_params:
-                            new_data[k] = v
-                    data = new_data
+                    data = drop_params_from_unprocessable_entity_error(e, data)
                 else:
                     raise e
             except (
@@ -1234,7 +1066,6 @@ class OpenAIChatCompletion(BaseLLM):
         client: Optional[AsyncOpenAI] = None,
         max_retries=None,
     ):
-        response = None
         try:
             openai_aclient: AsyncOpenAI = self._get_openai_client(  # type: ignore
                 is_async=True,
@@ -1256,12 +1087,15 @@ class OpenAIChatCompletion(BaseLLM):
                 additional_args={"complete_input_dict": data},
                 original_response=stringified_response,
             )
-            return convert_to_model_response_object(
+            returned_response: (
+                litellm.EmbeddingResponse
+            ) = convert_to_model_response_object(
                 response_object=stringified_response,
                 model_response_object=model_response,
                 response_type="embedding",
                 _response_headers=headers,
             )  # type: ignore
+            return returned_response
         except OpenAIError as e:
             ## LOGGING
             logging_obj.post_call(
@@ -1303,7 +1137,6 @@ class OpenAIChatCompletion(BaseLLM):
         aembedding=None,
     ):
         super().embedding()
-        exception_mapping_worked = False
         try:
             model = model
             data = {"model": model, "input": input, **optional_params}
@@ -1318,7 +1151,7 @@ class OpenAIChatCompletion(BaseLLM):
             )
 
             if aembedding is True:
-                response = self.aembedding(
+                async_response = self.aembedding(
                     data=data,
                     input=input,
                     logging_obj=logging_obj,
@@ -1329,7 +1162,7 @@ class OpenAIChatCompletion(BaseLLM):
                     client=client,
                     max_retries=max_retries,
                 )
-                return response
+                return async_response
 
             openai_client: OpenAI = self._get_openai_client(  # type: ignore
                 is_async=False,
@@ -1354,12 +1187,13 @@ class OpenAIChatCompletion(BaseLLM):
                 additional_args={"complete_input_dict": data},
                 original_response=sync_embedding_response,
             )
-            return convert_to_model_response_object(
+            response: litellm.EmbeddingResponse = convert_to_model_response_object(
                 response_object=sync_embedding_response.model_dump(),
                 model_response_object=model_response,
                 _response_headers=headers,
                 response_type="embedding",
             )  # type: ignore
+            return response
         except OpenAIError as e:
             raise e
         except Exception as e:

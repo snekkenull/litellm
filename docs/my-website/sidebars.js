@@ -50,7 +50,7 @@ const sidebars = {
         {
           type: "category",
           label: "🔑 Authentication",
-          items: ["proxy/virtual_keys", "proxy/token_auth", "proxy/oauth2"],
+          items: ["proxy/virtual_keys", "proxy/token_auth", "proxy/service_accounts", "proxy/ip_address"],
         },
         {
           type: "category",
@@ -228,12 +228,12 @@ const sidebars = {
         },
       ],
     },
+    "routing",
     "scheduler",
     {
       type: "category",
       label: "🚅 LiteLLM Python SDK",
       items: [
-        "routing",
         "set_keys",
         "completion/token_usage",
         "sdk_custom_pricing",

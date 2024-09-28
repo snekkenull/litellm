@@ -83,6 +83,8 @@ from .llms import (
 from .llms.AI21 import completion as ai21
 from .llms.anthropic.chat import AnthropicChatCompletion
 from .llms.anthropic.completion import AnthropicTextCompletion
+from .llms.azure_ai.chat import AzureAIChatCompletion
+from .llms.azure_ai.embed import AzureAIEmbedding
 from .llms.azure_text import AzureTextCompletion
 from .llms.AzureOpenAI.audio_transcriptions import AzureAudioTranscription
 from .llms.AzureOpenAI.azure import AzureChatCompletion, _check_dynamic_azure_params
@@ -94,6 +96,7 @@ from .llms.cohere import completion as cohere_completion  # type: ignore
 from .llms.cohere import embed as cohere_embed
 from .llms.custom_llm import CustomLLM, custom_chat_llm_router
 from .llms.databricks.chat import DatabricksChatCompletion
+from .llms.groq.chat.handler import GroqChatCompletion
 from .llms.huggingface_restapi import Huggingface
 from .llms.OpenAI.audio_transcriptions import OpenAIAudioTranscription
 from .llms.OpenAI.chat.o1_handler import OpenAIO1ChatCompletion
@@ -166,6 +169,9 @@ openai_text_completions = OpenAITextCompletion()
 openai_o1_chat_completions = OpenAIO1ChatCompletion()
 openai_audio_transcriptions = OpenAIAudioTranscription()
 databricks_chat_completions = DatabricksChatCompletion()
+groq_chat_completions = GroqChatCompletion()
+azure_ai_chat_completions = AzureAIChatCompletion()
+azure_ai_embedding = AzureAIEmbedding()
 anthropic_chat_completions = AnthropicChatCompletion()
 anthropic_text_completions = AnthropicTextCompletion()
 azure_chat_completions = AzureChatCompletion()
@@ -954,6 +960,7 @@ def completion(
             extra_headers=extra_headers,
             api_version=api_version,
             parallel_tool_calls=parallel_tool_calls,
+            messages=messages,
             **non_default_params,
         )
 
@@ -1177,7 +1184,7 @@ def completion(
             headers = headers or litellm.headers
 
             ## LOAD CONFIG - if set
-            config = litellm.OpenAIConfig.get_config()
+            config = litellm.AzureAIStudioConfig.get_config()
             for k, v in config.items():
                 if (
                     k not in optional_params
@@ -1190,7 +1197,7 @@ def completion(
 
             ## COMPLETION CALL
             try:
-                response = openai_chat_completions.completion(
+                response = azure_ai_chat_completions.completion(
                     model=model,
                     messages=messages,
                     headers=headers,
@@ -1314,13 +1321,56 @@ def completion(
                     additional_args={"headers": headers},
                 )
             response = _response
+        elif custom_llm_provider == "groq":
+            api_base = (
+                api_base  # for deepinfra/perplexity/anyscale/groq/friendliai we check in get_llm_provider and pass in the api base from there
+                or litellm.api_base
+                or get_secret("GROQ_API_BASE")
+                or "https://api.groq.com/openai/v1"
+            )
 
+            # set API KEY
+            api_key = (
+                api_key
+                or litellm.api_key  # for deepinfra/perplexity/anyscale/friendliai we check in get_llm_provider and pass in the api key from there
+                or litellm.groq_key
+                or get_secret("GROQ_API_KEY")
+            )
+
+            headers = headers or litellm.headers
+
+            ## LOAD CONFIG - if set
+            config = litellm.GroqChatConfig.get_config()
+            for k, v in config.items():
+                if (
+                    k not in optional_params
+                ):  # completion(top_k=3) > openai_config(top_k=3) <- allows for dynamic variables to be passed in
+                    optional_params[k] = v
+
+            response = groq_chat_completions.completion(
+                model=model,
+                messages=messages,
+                headers=headers,
+                model_response=model_response,
+                print_verbose=print_verbose,
+                api_key=api_key,
+                api_base=api_base,
+                acompletion=acompletion,
+                logging_obj=logging,
+                optional_params=optional_params,
+                litellm_params=litellm_params,
+                logger_fn=logger_fn,
+                timeout=timeout,  # type: ignore
+                custom_prompt_dict=custom_prompt_dict,
+                client=client,  # pass AsyncOpenAI, OpenAI client
+                organization=organization,
+                custom_llm_provider=custom_llm_provider,
+            )
         elif (
             model in litellm.open_ai_chat_completion_models
             or custom_llm_provider == "custom_openai"
             or custom_llm_provider == "deepinfra"
             or custom_llm_provider == "perplexity"
-            or custom_llm_provider == "groq"
             or custom_llm_provider == "nvidia_nim"
             or custom_llm_provider == "cerebras"
             or custom_llm_provider == "sambanova"
@@ -1427,6 +1477,7 @@ def completion(
                     original_response=response,
                     additional_args={"headers": headers},
                 )
+
         elif (
             "replicate" in model
             or custom_llm_provider == "replicate"
@@ -2408,8 +2459,9 @@ def completion(
                         aws_bedrock_client.meta.region_name
                     )
 
-            if model in litellm.BEDROCK_CONVERSE_MODELS:
+            base_model = litellm.AmazonConverseConfig()._get_base_model(model)
 
+            if base_model in litellm.BEDROCK_CONVERSE_MODELS:
                 response = bedrock_converse_chat_completion.completion(
                     model=model,
                     messages=messages,
@@ -2928,6 +2980,7 @@ def batch_completion(
     deployment_id=None,
     request_timeout: Optional[int] = None,
     timeout: Optional[int] = 600,
+    max_workers:Optional[int]= 100,
     # Optional liteLLM function params
     **kwargs,
 ):
@@ -2951,6 +3004,7 @@ def batch_completion(
         user (str, optional): The user string for generating completions. Defaults to "".
         deployment_id (optional): The deployment ID for generating completions. Defaults to None.
         request_timeout (int, optional): The request timeout for generating completions. Defaults to None.
+        max_workers (int,optional): The maximum number of threads to use for parallel processing.
 
     Returns:
         list: A list of completion results.
@@ -2996,7 +3050,7 @@ def batch_completion(
             for i in range(0, len(lst), n):
                 yield lst[i : i + n]
 
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for sub_batch in chunks(batch_messages, 100):
                 for message_list in sub_batch:
                     kwargs_modified = args.copy()
@@ -3213,6 +3267,8 @@ async def aembedding(*args, **kwargs) -> EmbeddingResponse:
             or custom_llm_provider == "cohere"
             or custom_llm_provider == "huggingface"
             or custom_llm_provider == "bedrock"
+            or custom_llm_provider == "azure_ai"
+            or custom_llm_provider == "together_ai"
         ):  # currently implemented aiohttp calls for just azure and openai, soon all.
             # Await normally
             init_response = await loop.run_in_executor(None, func_with_context)
@@ -3383,6 +3439,9 @@ def embedding(
         api_base=api_base,
         api_key=api_key,
     )
+    if dynamic_api_key is not None:
+        api_key = dynamic_api_key
+
     optional_params = get_optional_params_embeddings(
         model=model,
         user=user,
@@ -3479,7 +3538,9 @@ def embedding(
                 aembedding=aembedding,
             )
         elif (
-            model in litellm.open_ai_embedding_models or custom_llm_provider == "openai"
+            model in litellm.open_ai_embedding_models
+            or custom_llm_provider == "openai"
+            or custom_llm_provider == "together_ai"
         ):
             api_base = (
                 api_base
@@ -3828,6 +3889,33 @@ def embedding(
                 logging_obj=logging,
                 optional_params=optional_params,
                 model_response=EmbeddingResponse(),
+                aembedding=aembedding,
+            )
+        elif custom_llm_provider == "azure_ai":
+            api_base = (
+                api_base  # for deepinfra/perplexity/anyscale/groq/friendliai we check in get_llm_provider and pass in the api base from there
+                or litellm.api_base
+                or get_secret("AZURE_AI_API_BASE")
+            )
+            # set API KEY
+            api_key = (
+                api_key
+                or litellm.api_key  # for deepinfra/perplexity/anyscale/friendliai we check in get_llm_provider and pass in the api key from there
+                or litellm.openai_key
+                or get_secret("AZURE_AI_API_KEY")
+            )
+
+            ## EMBEDDING CALL
+            response = azure_ai_embedding.embedding(
+                model=model,
+                input=input,
+                api_base=api_base,
+                api_key=api_key,
+                logging_obj=logging,
+                timeout=timeout,
+                model_response=EmbeddingResponse(),
+                optional_params=optional_params,
+                client=client,
                 aembedding=aembedding,
             )
         else:
@@ -4899,7 +4987,11 @@ def speech(
     aspeech: Optional[bool] = None,
     **kwargs,
 ) -> HttpxBinaryResponseContent:
-
+    user = kwargs.get("user", None)
+    litellm_call_id: Optional[str] = kwargs.get("litellm_call_id", None)
+    proxy_server_request = kwargs.get("proxy_server_request", None)
+    model_info = kwargs.get("model_info", None)
+    metadata = kwargs.get("metadata", {})
     model, custom_llm_provider, dynamic_api_key, api_base = get_llm_provider(model=model, custom_llm_provider=custom_llm_provider, api_base=api_base)  # type: ignore
     tags = kwargs.pop("tags", [])
 
@@ -4916,6 +5008,21 @@ def speech(
         max_retries = litellm.num_retries or openai.DEFAULT_MAX_RETRIES
 
     logging_obj = kwargs.get("litellm_logging_obj", None)
+    logging_obj.update_environment_variables(
+        model=model,
+        user=user,
+        optional_params={},
+        litellm_params={
+            "litellm_call_id": litellm_call_id,
+            "proxy_server_request": proxy_server_request,
+            "model_info": model_info,
+            "metadata": metadata,
+            "preset_cache_key": None,
+            "stream_response": {},
+            **kwargs,
+        },
+        custom_llm_provider=custom_llm_provider,
+    )
     response: Optional[HttpxBinaryResponseContent] = None
     if custom_llm_provider == "openai":
         if voice is None or not (isinstance(voice, str)):
