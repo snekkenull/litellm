@@ -33,7 +33,7 @@ def print_verbose(print_statement):
         verbose_logger.debug(print_statement)
         if litellm.set_verbose:
             print(print_statement)  # noqa
-    except:
+    except Exception:
         pass
 
 
@@ -96,20 +96,15 @@ class InMemoryCache(BaseCache):
         """
         for key in list(self.ttl_dict.keys()):
             if time.time() > self.ttl_dict[key]:
-                removed_item = self.cache_dict.pop(key, None)
-                removed_ttl_item = self.ttl_dict.pop(key, None)
+                self.cache_dict.pop(key, None)
+                self.ttl_dict.pop(key, None)
 
                 # de-reference the removed item
                 # https://www.geeksforgeeks.org/diagnosing-and-fixing-memory-leaks-in-python/
                 # One of the most common causes of memory leaks in Python is the retention of objects that are no longer being used.
                 # This can occur when an object is referenced by another object, but the reference is never removed.
-                removed_item = None
-                removed_ttl_item = None
 
     def set_cache(self, key, value, **kwargs):
-        print_verbose(
-            "InMemoryCache: set_cache. current size= {}".format(len(self.cache_dict))
-        )
         if len(self.cache_dict) >= self.max_size_in_memory:
             # only evict when cache is full
             self.evict_cache()
@@ -150,7 +145,7 @@ class InMemoryCache(BaseCache):
             original_cached_response = self.cache_dict[key]
             try:
                 cached_response = json.loads(original_cached_response)
-            except:
+            except Exception:
                 cached_response = original_cached_response
             return cached_response
         return None
@@ -251,7 +246,7 @@ class RedisCache(BaseCache):
         self.redis_version = "Unknown"
         try:
             self.redis_version = self.redis_client.info()["redis_version"]
-        except Exception as e:
+        except Exception:
             pass
 
         ### ASYNC HEALTH PING ###
@@ -461,6 +456,9 @@ class RedisCache(BaseCache):
         """
         Use Redis Pipelines for bulk write operations
         """
+        # don't waste a network request if there's nothing to set
+        if len(cache_list) == 0:
+            return
         from redis.asyncio import Redis
 
         _redis_client: Redis = self.init_async_client()  # type: ignore
@@ -685,7 +683,7 @@ class RedisCache(BaseCache):
             cached_response = json.loads(
                 cached_response
             )  # Convert string to dictionary
-        except:
+        except Exception:
             cached_response = ast.literal_eval(cached_response)
         return cached_response
 
@@ -841,7 +839,7 @@ class RedisCache(BaseCache):
         """
         Tests if the sync redis client is correctly setup.
         """
-        print_verbose(f"Pinging Sync Redis Cache")
+        print_verbose("Pinging Sync Redis Cache")
         start_time = time.time()
         try:
             response = self.redis_client.ping()
@@ -875,7 +873,7 @@ class RedisCache(BaseCache):
         _redis_client = self.init_async_client()
         start_time = time.time()
         async with _redis_client as redis_client:
-            print_verbose(f"Pinging Async Redis Cache")
+            print_verbose("Pinging Async Redis Cache")
             try:
                 response = await redis_client.ping()
                 ## LOGGING ##
@@ -970,7 +968,6 @@ class RedisSemanticCache(BaseCache):
             },
             "fields": {
                 "text": [{"name": "response"}],
-                "text": [{"name": "prompt"}],
                 "vector": [
                     {
                         "name": "litellm_embedding",
@@ -996,14 +993,14 @@ class RedisSemanticCache(BaseCache):
 
             redis_url = "redis://:" + password + "@" + host + ":" + port
         print_verbose(f"redis semantic-cache redis_url: {redis_url}")
-        if use_async == False:
+        if use_async is False:
             self.index = SearchIndex.from_dict(schema)
             self.index.connect(redis_url=redis_url)
             try:
                 self.index.create(overwrite=False)  # don't overwrite existing index
             except Exception as e:
                 print_verbose(f"Got exception creating semantic cache index: {str(e)}")
-        elif use_async == True:
+        elif use_async is True:
             schema["index"]["name"] = "litellm_semantic_cache_index_async"
             self.index = SearchIndex.from_dict(schema)
             self.index.connect(redis_url=redis_url, use_async=True)
@@ -1024,7 +1021,7 @@ class RedisSemanticCache(BaseCache):
             cached_response = json.loads(
                 cached_response
             )  # Convert string to dictionary
-        except:
+        except Exception:
             cached_response = ast.literal_eval(cached_response)
         return cached_response
 
@@ -1057,7 +1054,7 @@ class RedisSemanticCache(BaseCache):
         ]
 
         # Add more data
-        keys = self.index.load(new_data)
+        self.index.load(new_data)
 
         return
 
@@ -1089,7 +1086,7 @@ class RedisSemanticCache(BaseCache):
         )
 
         results = self.index.query(query)
-        if results == None:
+        if results is None:
             return None
         if isinstance(results, list):
             if len(results) == 0:
@@ -1170,7 +1167,7 @@ class RedisSemanticCache(BaseCache):
         ]
 
         # Add more data
-        keys = await self.index.aload(new_data)
+        await self.index.aload(new_data)
         return
 
     async def async_get_cache(self, key, **kwargs):
@@ -1219,7 +1216,7 @@ class RedisSemanticCache(BaseCache):
             return_fields=["response", "prompt", "vector_distance"],
         )
         results = await self.index.aquery(query)
-        if results == None:
+        if results is None:
             kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0
             return None
         if isinstance(results, list):
@@ -1393,7 +1390,7 @@ class QdrantSemanticCache(BaseCache):
             cached_response = json.loads(
                 cached_response
             )  # Convert string to dictionary
-        except:
+        except Exception:
             cached_response = ast.literal_eval(cached_response)
         return cached_response
 
@@ -1432,7 +1429,7 @@ class QdrantSemanticCache(BaseCache):
                 },
             ]
         }
-        keys = self.sync_client.put(
+        self.sync_client.put(
             url=f"{self.qdrant_api_base}/collections/{self.collection_name}/points",
             headers=self.headers,
             json=data,
@@ -1478,7 +1475,7 @@ class QdrantSemanticCache(BaseCache):
         )
         results = search_response.json()["result"]
 
-        if results == None:
+        if results is None:
             return None
         if isinstance(results, list):
             if len(results) == 0:
@@ -1560,7 +1557,7 @@ class QdrantSemanticCache(BaseCache):
             ]
         }
 
-        keys = await self.async_client.put(
+        await self.async_client.put(
             url=f"{self.qdrant_api_base}/collections/{self.collection_name}/points",
             headers=self.headers,
             json=data,
@@ -1626,7 +1623,7 @@ class QdrantSemanticCache(BaseCache):
 
         results = search_response.json()["result"]
 
-        if results == None:
+        if results is None:
             kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0
             return None
         if isinstance(results, list):
@@ -1764,7 +1761,7 @@ class S3Cache(BaseCache):
                     cached_response = json.loads(
                         cached_response
                     )  # Convert string to dictionary
-                except Exception as e:
+                except Exception:
                     cached_response = ast.literal_eval(cached_response)
             if type(cached_response) is not dict:
                 cached_response = dict(cached_response)
@@ -1835,14 +1832,13 @@ class DualCache(BaseCache):
     def set_cache(self, key, value, local_only: bool = False, **kwargs):
         # Update both Redis and in-memory cache
         try:
-            print_verbose(f"set cache: key: {key}; value: {value}")
             if self.in_memory_cache is not None:
                 if "ttl" not in kwargs and self.default_in_memory_ttl is not None:
                     kwargs["ttl"] = self.default_in_memory_ttl
 
                 self.in_memory_cache.set_cache(key, value, **kwargs)
 
-            if self.redis_cache is not None and local_only == False:
+            if self.redis_cache is not None and local_only is False:
                 self.redis_cache.set_cache(key, value, **kwargs)
         except Exception as e:
             print_verbose(e)
@@ -1862,7 +1858,7 @@ class DualCache(BaseCache):
             if self.in_memory_cache is not None:
                 result = self.in_memory_cache.increment_cache(key, value, **kwargs)
 
-            if self.redis_cache is not None and local_only == False:
+            if self.redis_cache is not None and local_only is False:
                 result = self.redis_cache.increment_cache(key, value, **kwargs)
 
             return result
@@ -1873,7 +1869,6 @@ class DualCache(BaseCache):
     def get_cache(self, key, local_only: bool = False, **kwargs):
         # Try to fetch from in-memory cache first
         try:
-            print_verbose(f"get cache: cache key: {key}; local_only: {local_only}")
             result = None
             if self.in_memory_cache is not None:
                 in_memory_result = self.in_memory_cache.get_cache(key, **kwargs)
@@ -1884,7 +1879,7 @@ class DualCache(BaseCache):
             if (
                 (self.always_read_redis is True)
                 and self.redis_cache is not None
-                and local_only == False
+                and local_only is False
             ):
                 # If not found in in-memory cache or always_read_redis is True, try fetching from Redis
                 redis_result = self.redis_cache.get_cache(key, **kwargs)
@@ -1897,7 +1892,7 @@ class DualCache(BaseCache):
 
             print_verbose(f"get cache: cache result: {result}")
             return result
-        except Exception as e:
+        except Exception:
             verbose_logger.error(traceback.format_exc())
 
     def batch_get_cache(self, keys: list, local_only: bool = False, **kwargs):
@@ -1906,11 +1901,10 @@ class DualCache(BaseCache):
             if self.in_memory_cache is not None:
                 in_memory_result = self.in_memory_cache.batch_get_cache(keys, **kwargs)
 
-                print_verbose(f"in_memory_result: {in_memory_result}")
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if None in result and self.redis_cache is not None and local_only == False:
+            if None in result and self.redis_cache is not None and local_only is False:
                 """
                 - for the none values in the result
                 - check the redis cache
@@ -1930,7 +1924,7 @@ class DualCache(BaseCache):
 
             print_verbose(f"async batch get cache: cache result: {result}")
             return result
-        except Exception as e:
+        except Exception:
             verbose_logger.error(traceback.format_exc())
 
     async def async_get_cache(self, key, local_only: bool = False, **kwargs):
@@ -1949,7 +1943,7 @@ class DualCache(BaseCache):
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if result is None and self.redis_cache is not None and local_only == False:
+            if result is None and self.redis_cache is not None and local_only is False:
                 # If not found in in-memory cache, try fetching from Redis
                 redis_result = await self.redis_cache.async_get_cache(key, **kwargs)
 
@@ -1963,7 +1957,7 @@ class DualCache(BaseCache):
 
             print_verbose(f"get cache: cache result: {result}")
             return result
-        except Exception as e:
+        except Exception:
             verbose_logger.error(traceback.format_exc())
 
     async def async_batch_get_cache(
@@ -1978,7 +1972,7 @@ class DualCache(BaseCache):
 
                 if in_memory_result is not None:
                     result = in_memory_result
-            if None in result and self.redis_cache is not None and local_only == False:
+            if None in result and self.redis_cache is not None and local_only is False:
                 """
                 - for the none values in the result
                 - check the redis cache
@@ -2003,7 +1997,7 @@ class DualCache(BaseCache):
                     result[index] = value
 
             return result
-        except Exception as e:
+        except Exception:
             verbose_logger.error(traceback.format_exc())
 
     async def async_set_cache(self, key, value, local_only: bool = False, **kwargs):
@@ -2014,7 +2008,7 @@ class DualCache(BaseCache):
             if self.in_memory_cache is not None:
                 await self.in_memory_cache.async_set_cache(key, value, **kwargs)
 
-            if self.redis_cache is not None and local_only == False:
+            if self.redis_cache is not None and local_only is False:
                 await self.redis_cache.async_set_cache(key, value, **kwargs)
         except Exception as e:
             verbose_logger.exception(
@@ -2036,7 +2030,7 @@ class DualCache(BaseCache):
                     cache_list=cache_list, **kwargs
                 )
 
-            if self.redis_cache is not None and local_only == False:
+            if self.redis_cache is not None and local_only is False:
                 await self.redis_cache.async_set_cache_pipeline(
                     cache_list=cache_list, ttl=kwargs.pop("ttl", None), **kwargs
                 )
@@ -2398,12 +2392,12 @@ class Cache:
         # Hexadecimal representation of the hash
         hash_hex = hash_object.hexdigest()
         print_verbose(f"Hashed cache key (SHA-256): {hash_hex}")
-        if self.namespace is not None:
-            hash_hex = f"{self.namespace}:{hash_hex}"
-            print_verbose(f"Hashed Key with Namespace: {hash_hex}")
-        elif kwargs.get("metadata", {}).get("redis_namespace", None) is not None:
+        if kwargs.get("metadata", {}).get("redis_namespace", None) is not None:
             _namespace = kwargs.get("metadata", {}).get("redis_namespace", None)
             hash_hex = f"{_namespace}:{hash_hex}"
+            print_verbose(f"Hashed Key with Namespace: {hash_hex}")
+        elif self.namespace is not None:
+            hash_hex = f"{self.namespace}:{hash_hex}"
             print_verbose(f"Hashed Key with Namespace: {hash_hex}")
         return hash_hex
 
@@ -2456,7 +2450,7 @@ class Cache:
                     cached_response = json.loads(
                         cached_response  # type: ignore
                     )  # Convert string to dictionary
-            except:
+            except Exception:
                 cached_response = ast.literal_eval(cached_response)  # type: ignore
             return cached_response
         return cached_result
@@ -2489,7 +2483,7 @@ class Cache:
                 return self._get_cache_logic(
                     cached_result=cached_result, max_age=max_age
                 )
-        except Exception as e:
+        except Exception:
             print_verbose(f"An exception occurred: {traceback.format_exc()}")
             return None
 
@@ -2503,7 +2497,7 @@ class Cache:
             if self.should_use_cache(*args, **kwargs) is not True:
                 return
 
-            messages = kwargs.get("messages", [])
+            kwargs.get("messages", [])
             if "cache_key" in kwargs:
                 cache_key = kwargs["cache_key"]
             else:
@@ -2519,7 +2513,7 @@ class Cache:
                 return self._get_cache_logic(
                     cached_result=cached_result, max_age=max_age
                 )
-        except Exception as e:
+        except Exception:
             print_verbose(f"An exception occurred: {traceback.format_exc()}")
             return None
 
@@ -2698,7 +2692,7 @@ class DiskCache(BaseCache):
         if original_cached_response:
             try:
                 cached_response = json.loads(original_cached_response)  # type: ignore
-            except:
+            except Exception:
                 cached_response = original_cached_response
             return cached_response
         return None
@@ -2800,7 +2794,7 @@ def enable_cache(
     if "cache" not in litellm._async_success_callback:
         litellm._async_success_callback.append("cache")
 
-    if litellm.cache == None:
+    if litellm.cache is None:
         litellm.cache = Cache(
             type=type,
             host=host,

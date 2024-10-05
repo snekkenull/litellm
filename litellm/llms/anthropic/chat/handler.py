@@ -10,7 +10,7 @@ import traceback
 import types
 from enum import Enum
 from functools import partial
-from typing import Callable, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import httpx  # type: ignore
 import requests  # type: ignore
@@ -29,68 +29,26 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
 )
 from litellm.types.llms.anthropic import (
-    AnthopicMessagesAssistantMessageParam,
     AnthropicChatCompletionUsageBlock,
-    AnthropicFinishReason,
-    AnthropicMessagesRequest,
-    AnthropicMessagesTool,
-    AnthropicMessagesToolChoice,
-    AnthropicMessagesUserMessageParam,
-    AnthropicResponse,
-    AnthropicResponseContentBlockText,
-    AnthropicResponseContentBlockToolUse,
-    AnthropicResponseUsageBlock,
-    AnthropicSystemMessageContent,
     ContentBlockDelta,
     ContentBlockStart,
     ContentBlockStop,
-    ContentJsonBlockDelta,
-    ContentTextBlockDelta,
     MessageBlockDelta,
-    MessageDelta,
     MessageStartBlock,
     UsageDelta,
 )
 from litellm.types.llms.openai import (
     AllMessageValues,
-    ChatCompletionAssistantMessage,
-    ChatCompletionAssistantToolCall,
-    ChatCompletionImageObject,
-    ChatCompletionImageUrlObject,
-    ChatCompletionRequest,
-    ChatCompletionResponseMessage,
-    ChatCompletionSystemMessage,
-    ChatCompletionTextObject,
     ChatCompletionToolCallChunk,
     ChatCompletionToolCallFunctionChunk,
-    ChatCompletionToolChoiceFunctionParam,
-    ChatCompletionToolChoiceObjectParam,
-    ChatCompletionToolChoiceValues,
-    ChatCompletionToolMessage,
-    ChatCompletionToolParam,
-    ChatCompletionToolParamFunctionChunk,
     ChatCompletionUsageBlock,
-    ChatCompletionUserMessage,
-    OpenAIMessageContent,
 )
-from litellm.types.utils import Choices, GenericStreamingChunk
+from litellm.types.utils import GenericStreamingChunk, PromptTokensDetails
 from litellm.utils import CustomStreamWrapper, ModelResponse, Usage
 
 from ...base import BaseLLM
-from ...prompt_templates.factory import (
-    anthropic_messages_pt,
-    custom_prompt,
-    prompt_factory,
-)
-from ..common_utils import AnthropicError
+from ..common_utils import AnthropicError, process_anthropic_headers
 from .transformation import AnthropicConfig
-
-
-class AnthropicConstants(Enum):
-    HUMAN_PROMPT = "\n\nHuman: "
-    AI_PROMPT = "\n\nAssistant: "
-
-    # constants from https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/_constants.py
 
 
 # makes headers for API call
@@ -130,7 +88,7 @@ async def make_call(
     messages: list,
     logging_obj,
     timeout: Optional[Union[float, httpx.Timeout]],
-):
+) -> Tuple[Any, httpx.Headers]:
     if client is None:
         client = litellm.module_level_aclient
 
@@ -166,7 +124,7 @@ async def make_call(
         additional_args={"complete_input_dict": data},
     )
 
-    return completion_stream
+    return completion_stream, response.headers
 
 
 def make_sync_call(
@@ -178,7 +136,7 @@ def make_sync_call(
     messages: list,
     logging_obj,
     timeout: Optional[Union[float, httpx.Timeout]],
-):
+) -> Tuple[Any, httpx.Headers]:
     if client is None:
         client = litellm.module_level_client  # re-use a module level client
 
@@ -222,7 +180,7 @@ def make_sync_call(
         additional_args={"complete_input_dict": data},
     )
 
-    return completion_stream
+    return completion_stream, response.headers
 
 
 class AnthropicChatCompletion(BaseLLM):
@@ -244,14 +202,10 @@ class AnthropicChatCompletion(BaseLLM):
         encoding,
         json_mode: bool,
     ) -> ModelResponse:
-        _hidden_params = {}
-        _response_headers = dict(response.headers)
-        if _response_headers is not None:
-            llm_response_headers = {
-                "{}-{}".format("llm_provider", k): v
-                for k, v in _response_headers.items()
-            }
-            _hidden_params["additional_headers"] = llm_response_headers
+        _hidden_params: Dict = {}
+        _hidden_params["additional_headers"] = process_anthropic_headers(
+            dict(response.headers)
+        )
         ## LOGGING
         logging_obj.post_call(
             input=messages,
@@ -329,19 +283,28 @@ class AnthropicChatCompletion(BaseLLM):
         completion_tokens = completion_response["usage"]["output_tokens"]
         _usage = completion_response["usage"]
         total_tokens = prompt_tokens + completion_tokens
+        cache_creation_input_tokens: int = 0
+        cache_read_input_tokens: int = 0
 
         model_response.created = int(time.time())
         model_response.model = model
+        if "cache_creation_input_tokens" in _usage:
+            cache_creation_input_tokens = _usage["cache_creation_input_tokens"]
+        if "cache_read_input_tokens" in _usage:
+            cache_read_input_tokens = _usage["cache_read_input_tokens"]
+
+        prompt_tokens_details = PromptTokensDetails(
+            cached_tokens=cache_read_input_tokens
+        )
         usage = Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            prompt_tokens_details=prompt_tokens_details,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
         )
 
-        if "cache_creation_input_tokens" in _usage:
-            usage["cache_creation_input_tokens"] = _usage["cache_creation_input_tokens"]
-        if "cache_read_input_tokens" in _usage:
-            usage["cache_read_input_tokens"] = _usage["cache_read_input_tokens"]
         setattr(model_response, "usage", usage)  # type: ignore
 
         model_response._hidden_params = _hidden_params
@@ -370,7 +333,7 @@ class AnthropicChatCompletion(BaseLLM):
     ):
         data["stream"] = True
 
-        completion_stream = await make_call(
+        completion_stream, headers = await make_call(
             client=client,
             api_base=api_base,
             headers=headers,
@@ -385,6 +348,7 @@ class AnthropicChatCompletion(BaseLLM):
             model=model,
             custom_llm_provider="anthropic",
             logging_obj=logging_obj,
+            _response_headers=process_anthropic_headers(headers),
         )
         return streamwrapper
 
@@ -558,7 +522,7 @@ class AnthropicChatCompletion(BaseLLM):
                 stream is True
             ):  # if function call - fake the streaming (need complete blocks for output parsing in openai format)
                 data["stream"] = stream
-                completion_stream = make_sync_call(
+                completion_stream, headers = make_sync_call(
                     client=client,
                     api_base=api_base,
                     headers=headers,  # type: ignore
@@ -573,6 +537,7 @@ class AnthropicChatCompletion(BaseLLM):
                     model=model,
                     custom_llm_provider="anthropic",
                     logging_obj=logging_obj,
+                    _response_headers=process_anthropic_headers(headers),
                 )
 
             else:
@@ -595,6 +560,8 @@ class AnthropicChatCompletion(BaseLLM):
                     error_response = getattr(e, "response", None)
                     if error_headers is None and error_response:
                         error_headers = getattr(error_response, "headers", None)
+                    if error_response and hasattr(error_response, "text"):
+                        error_text = getattr(error_response, "text", error_text)
                     raise AnthropicError(
                         message=error_text,
                         status_code=status_code,
@@ -651,7 +618,6 @@ class ModelResponseIterator:
     def _handle_usage(
         self, anthropic_usage_chunk: Union[dict, UsageDelta]
     ) -> AnthropicChatCompletionUsageBlock:
-        special_fields = ["input_tokens", "output_tokens"]
 
         usage_block = AnthropicChatCompletionUsageBlock(
             prompt_tokens=anthropic_usage_chunk.get("input_tokens", 0),
@@ -727,7 +693,7 @@ class ModelResponseIterator:
                         "index": self.tool_index,
                     }
             elif type_chunk == "content_block_stop":
-                content_block_stop = ContentBlockStop(**chunk)  # type: ignore
+                ContentBlockStop(**chunk)  # type: ignore
                 # check if tool call content block
                 is_empty = self.check_empty_tool_call_args()
                 if is_empty:

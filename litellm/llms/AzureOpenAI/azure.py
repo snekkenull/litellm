@@ -3,20 +3,16 @@ import json
 import os
 import time
 import types
-import uuid
 from typing import Any, Callable, Coroutine, Iterable, List, Literal, Optional, Union
 
 import httpx  # type: ignore
-import requests
 from openai import AsyncAzureOpenAI, AzureOpenAI
-from pydantic import BaseModel
 from typing_extensions import overload
 
 import litellm
 from litellm.caching import DualCache
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-from litellm.types.utils import FileTypes  # type: ignore
 from litellm.types.utils import EmbeddingResponse
 from litellm.utils import (
     CustomStreamWrapper,
@@ -28,13 +24,6 @@ from litellm.utils import (
 )
 
 from ...types.llms.openai import (
-    Assistant,
-    AssistantEventHandler,
-    AssistantStreamManager,
-    AssistantToolParam,
-    AsyncAssistantEventHandler,
-    AsyncAssistantStreamManager,
-    AsyncCursorPage,
     Batch,
     CancelBatchRequest,
     ChatCompletionToolChoiceFunctionParam,
@@ -43,15 +32,10 @@ from ...types.llms.openai import (
     ChatCompletionToolParamFunctionChunk,
     CreateBatchRequest,
     HttpxBinaryResponseContent,
-    MessageData,
-    OpenAICreateThreadParamsMessage,
-    OpenAIMessage,
     RetrieveBatchRequest,
-    Run,
-    SyncCursorPage,
-    Thread,
 )
 from ..base import BaseLLM
+from .common_utils import process_azure_headers
 
 azure_ad_cache = DualCache()
 
@@ -151,6 +135,7 @@ class AzureOpenAIConfig:
             "temperature",
             "n",
             "stream",
+            "stream_options",
             "stop",
             "max_tokens",
             "max_completion_tokens",
@@ -333,7 +318,7 @@ class AzureOpenAIAssistantsAPIConfig:
                         if "file_id" in item:
                             file_ids.append(item["file_id"])
                         else:
-                            if litellm.drop_params == True:
+                            if litellm.drop_params is True:
                                 pass
                             else:
                                 raise litellm.utils.UnsupportedParamsError(
@@ -596,7 +581,7 @@ class AzureChatCompletion(BaseLLM):
         try:
             if model is None or messages is None:
                 raise AzureOpenAIError(
-                    status_code=422, message=f"Missing model or messages"
+                    status_code=422, message="Missing model or messages"
                 )
 
             max_retries = optional_params.pop("max_retries", 2)
@@ -761,6 +746,7 @@ class AzureChatCompletion(BaseLLM):
                     response_object=stringified_response,
                     model_response_object=model_response,
                     convert_tool_call_to_json_mode=json_mode,
+                    _response_headers=headers,
                 )
         except AzureOpenAIError as e:
             raise e
@@ -953,6 +939,8 @@ class AzureChatCompletion(BaseLLM):
             model=model,
             custom_llm_provider="azure",
             logging_obj=logging_obj,
+            stream_options=data.get("stream_options", None),
+            _response_headers=process_azure_headers(headers),
         )
         return streamwrapper
 
@@ -1020,6 +1008,7 @@ class AzureChatCompletion(BaseLLM):
                 model=model,
                 custom_llm_provider="azure",
                 logging_obj=logging_obj,
+                stream_options=data.get("stream_options", None),
                 _response_headers=headers,
             )
             return streamwrapper  ## DO NOT make this into an async for ... loop, it will yield an async generator, which won't raise errors if the response fails
@@ -1067,7 +1056,7 @@ class AzureChatCompletion(BaseLLM):
                 response_object=stringified_response,
                 model_response_object=model_response,
                 hidden_params={"headers": headers},
-                _response_headers=headers,
+                _response_headers=process_azure_headers(headers),
                 response_type="embedding",
             )
         except Exception as e:
@@ -1156,6 +1145,7 @@ class AzureChatCompletion(BaseLLM):
                 azure_client = client
             ## COMPLETION CALL
             raw_response = azure_client.embeddings.with_raw_response.create(**data, timeout=timeout)  # type: ignore
+            headers = dict(raw_response.headers)
             response = raw_response.parse()
             ## LOGGING
             logging_obj.post_call(
@@ -1165,7 +1155,7 @@ class AzureChatCompletion(BaseLLM):
                 original_response=response,
             )
 
-            return convert_to_model_response_object(response_object=response.model_dump(), model_response_object=model_response, response_type="embedding")  # type: ignore
+            return convert_to_model_response_object(response_object=response.model_dump(), model_response_object=model_response, response_type="embedding", _response_headers=process_azure_headers(headers))  # type: ignore
         except AzureOpenAIError as e:
             raise e
         except Exception as e:
@@ -1253,12 +1243,6 @@ class AzureChatCompletion(BaseLLM):
                 )
             while response.json()["status"] not in ["succeeded", "failed"]:
                 if time.time() - start_time > timeout_secs:
-                    timeout_msg = {
-                        "error": {
-                            "code": "Timeout",
-                            "message": "Operation polling timed out.",
-                        }
-                    }
 
                     raise AzureOpenAIError(
                         status_code=408, message="Operation polling timed out."
@@ -1506,7 +1490,6 @@ class AzureChatCompletion(BaseLLM):
         client=None,
         aimg_generation=None,
     ):
-        exception_mapping_worked = False
         try:
             if model and len(model) > 0:
                 model = model
@@ -1547,7 +1530,7 @@ class AzureChatCompletion(BaseLLM):
                     azure_ad_token = get_azure_ad_token_from_oidc(azure_ad_token)
                 azure_client_params["azure_ad_token"] = azure_ad_token
 
-            if aimg_generation == True:
+            if aimg_generation is True:
                 response = self.aimage_generation(data=data, input=input, logging_obj=logging_obj, model_response=model_response, api_key=api_key, client=client, azure_client_params=azure_client_params, timeout=timeout)  # type: ignore
                 return response
 
@@ -1830,7 +1813,9 @@ class AzureChatCompletion(BaseLLM):
         elif mode == "audio_transcription":
             # Get the current directory of the file being run
             pwd = os.path.dirname(os.path.realpath(__file__))
-            file_path = os.path.join(pwd, "../tests/gettysburg.wav")
+            file_path = os.path.join(
+                pwd, "../../../tests/gettysburg.wav"
+            )  # proxy address
             audio_file = open(file_path, "rb")
             completion = await client.audio.transcriptions.with_raw_response.create(
                 file=audio_file,
