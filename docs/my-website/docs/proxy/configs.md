@@ -599,12 +599,64 @@ model_list:
       additionalProp1: {}
 
 litellm_settings:
+  # Logging/Callback settings
   success_callback: ["langfuse"]  # list of success callbacks
   failure_callback: ["sentry"]  # list of failure callbacks
   callbacks: ["otel"]  # list of callbacks - runs on success and failure
   service_callbacks: ["datadog", "prometheus"]  # logs redis, postgres failures on datadog, prometheus
   turn_off_message_logging: boolean  # prevent the messages and responses from being logged to on your callbacks, but request metadata will still be logged.
   redact_user_api_key_info: boolean  # Redact information about the user api key (hashed token, user_id, team id, etc.), from logs. Currently supported for Langfuse, OpenTelemetry, Logfire, ArizeAI logging.
+  langfuse_default_tags: ["cache_hit", "cache_key", "proxy_base_url", "user_api_key_alias", "user_api_key_user_id", "user_api_key_user_email", "user_api_key_team_alias", "semantic-similarity", "proxy_base_url"] # default tags for Langfuse Logging
+  
+  
+  set_verbose: boolean # sets litellm.set_verbose=True to view verbose debug logs. DO NOT LEAVE THIS ON IN PRODUCTION
+  json_logs: boolean # if true, logs will be in json format
+
+  # Fallbacks, reliability
+  default_fallbacks: ["claude-opus"] # set default_fallbacks, in case a specific model group is misconfigured / bad.
+  content_policy_fallbacks: [{"gpt-3.5-turbo-small": ["claude-opus"]}] # fallbacks for ContentPolicyErrors
+  context_window_fallbacks: [{"gpt-3.5-turbo-small": ["gpt-3.5-turbo-large", "claude-opus"]}] # fallbacks for ContextWindowExceededErrors
+
+
+
+  # Caching settings
+  cache: true 
+  cache_params:        # set cache params for redis
+    type: redis        # type of cache to initialize
+
+    # Optional - Redis Settings
+    host: "localhost"  # The host address for the Redis cache. Required if type is "redis".
+    port: 6379  # The port number for the Redis cache. Required if type is "redis".
+    password: "your_password"  # The password for the Redis cache. Required if type is "redis".
+    namespace: "litellm_caching" # namespace for redis cache
+  
+    # Optional - Redis Cluster Settings
+    redis_startup_nodes: [{"host": "127.0.0.1", "port": "7001"}] 
+
+    # Optional - Redis Sentinel Settings
+    service_name: "mymaster"
+    sentinel_nodes: [["localhost", 26379]]
+
+    # Optional - Qdrant Semantic Cache Settings
+    qdrant_semantic_cache_embedding_model: openai-embedding # the model should be defined on the model_list
+    qdrant_collection_name: test_collection
+    qdrant_quantization_config: binary
+    similarity_threshold: 0.8   # similarity threshold for semantic cache
+
+    # Optional - S3 Cache Settings
+    s3_bucket_name: cache-bucket-litellm   # AWS Bucket Name for S3
+    s3_region_name: us-west-2              # AWS Region Name for S3
+    s3_aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID  # us os.environ/<variable name> to pass environment variables. This is AWS Access Key ID for S3
+    s3_aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY  # AWS Secret Access Key for S3
+    s3_endpoint_url: https://s3.amazonaws.com  # [OPTIONAL] S3 endpoint URL, if you want to use Backblaze/cloudflare s3 bucket
+
+    # Common Cache settings
+    # Optional - Supported call types for caching
+    supported_call_types: ["acompletion", "atext_completion", "aembedding", "atranscription"]
+                          # /chat/completions, /completions, /embeddings, /audio/transcriptions
+    mode: default_off # if default_off, you need to opt in to caching on a per call basis
+    ttl: 600 # ttl for caching
+
 
 callback_settings:
   otel:
@@ -645,7 +697,37 @@ general_settings:
 | callbacks | array of strings | List of callbacks - runs on success and failure [Doc Proxy logging callbacks](logging), [Doc Metrics](prometheus) |
 | service_callbacks | array of strings | System health monitoring - Logs redis, postgres failures on specified services (e.g. datadog, prometheus) [Doc Metrics](prometheus) |
 | turn_off_message_logging | boolean | If true, prevents messages and responses from being logged to callbacks, but request metadata will still be logged [Proxy Logging](logging) |
+| modify_params | boolean | If true, allows modifying the parameters of the request before it is sent to the LLM provider |
+| enable_preview_features | boolean | If true, enables preview features - e.g. Azure O1 Models with streaming support.|
 | redact_user_api_key_info | boolean | If true, redacts information about the user api key from logs [Proxy Logging](logging#redacting-userapikeyinfo) |
+| langfuse_default_tags | array of strings | Default tags for Langfuse Logging. Use this if you want to control which LiteLLM-specific fields are logged as tags by the LiteLLM proxy. By default LiteLLM Proxy logs no LiteLLM-specific fields as tags. [Further docs](./logging#litellm-specific-tags-on-langfuse---cache_hit-cache_key) |
+| set_verbose | boolean | If true, sets litellm.set_verbose=True to view verbose debug logs. DO NOT LEAVE THIS ON IN PRODUCTION |
+| json_logs | boolean | If true, logs will be in json format. If you need to store the logs as JSON, just set the `litellm.json_logs = True`. We currently just log the raw POST request from litellm as a JSON [Further docs](./debugging) |
+| default_fallbacks | array of strings | List of fallback models to use if a specific model group is misconfigured / bad. [Further docs](./reliability#default-fallbacks) |
+| content_policy_fallbacks | array of objects | Fallbacks to use when a ContentPolicyViolationError is encountered. [Further docs](./reliability#content-policy-fallbacks) |
+| context_window_fallbacks | array of objects | Fallbacks to use when a ContextWindowExceededError is encountered. [Further docs](./reliability#context-window-fallbacks) |
+| cache | boolean | If true, enables caching. [Further docs](./caching) |
+| cache_params | object | Parameters for the cache. [Further docs](./caching) |
+| cache_params.type | string | The type of cache to initialize. Can be one of ["local", "redis", "redis-semantic", "s3", "disk", "qdrant-semantic"]. Defaults to "redis". [Furher docs](./caching) |
+| cache_params.host | string | The host address for the Redis cache. Required if type is "redis". |
+| cache_params.port | integer | The port number for the Redis cache. Required if type is "redis". |
+| cache_params.password | string | The password for the Redis cache. Required if type is "redis". |
+| cache_params.namespace | string | The namespace for the Redis cache. |
+| cache_params.redis_startup_nodes | array of objects | Redis Cluster Settings. [Further docs](./caching) |
+| cache_params.service_name | string | Redis Sentinel Settings. [Further docs](./caching) |
+| cache_params.sentinel_nodes | array of arrays | Redis Sentinel Settings. [Further docs](./caching) |
+| cache_params.ttl | integer | The time (in seconds) to store entries in cache. |
+| cache_params.qdrant_semantic_cache_embedding_model | string | The embedding model to use for qdrant semantic cache. |
+| cache_params.qdrant_collection_name | string | The name of the collection to use for qdrant semantic cache. |
+| cache_params.qdrant_quantization_config | string | The quantization configuration for the qdrant semantic cache. |
+| cache_params.similarity_threshold | float | The similarity threshold for the semantic cache. |
+| cache_params.s3_bucket_name | string | The name of the S3 bucket to use for the semantic cache. |
+| cache_params.s3_region_name | string | The region name for the S3 bucket. |
+| cache_params.s3_aws_access_key_id | string | The AWS access key ID for the S3 bucket. |
+| cache_params.s3_aws_secret_access_key | string | The AWS secret access key for the S3 bucket. |
+| cache_params.s3_endpoint_url | string | Optional - The endpoint URL for the S3 bucket. |
+| cache_params.supported_call_types | array of strings | The types of calls to cache. [Further docs](./caching) |
+| cache_params.mode | string | The mode of the cache. [Further docs](./caching) |
 
 ### general_settings - Reference
 
@@ -674,7 +756,44 @@ general_settings:
 | alerting | array of strings | List of alerting methods [Doc on Slack Alerting](alerting) |
 | alerting_threshold | integer | The threshold for triggering alerts [Doc on Slack Alerting](alerting) |
 | use_client_credentials_pass_through_routes | boolean | If true, uses client credentials for all pass-through routes. [Doc on pass through routes](pass_through) |
-
+| health_check_details | boolean | If false, hides health check details (e.g. remaining rate limit). [Doc on health checks](health) |
+| public_routes | List[str] | (Enterprise Feature) Control list of public routes |
+| alert_types | List[str] | Control list of alert types to send to slack (Doc on alert types)[./alerting.md] |
+| enforced_params | List[str] | (Enterprise Feature) List of params that must be included in all requests to the proxy |
+| enable_oauth2_auth | boolean | (Enterprise Feature) If true, enables oauth2.0 authentication |
+| use_x_forwarded_for | str | If true, uses the X-Forwarded-For header to get the client IP address |
+| service_account_settings | List[Dict[str, Any]] | Set `service_account_settings` if you want to create settings that only apply to service account keys (Doc on service accounts)[./service_accounts.md] | 
+| image_generation_model | str | The default model to use for image generation - ignores model set in request |
+| store_model_in_db | boolean | If true, allows `/model/new` endpoint to store model information in db. Endpoint disabled by default. [Doc on `/model/new` endpoint](./model_management.md#create-a-new-model) |
+| max_request_size_mb | int | The maximum size for requests in MB. Requests above this size will be rejected. |
+| max_response_size_mb | int | The maximum size for responses in MB. LLM Responses above this size will not be sent. |
+| proxy_budget_rescheduler_min_time | int | The minimum time (in seconds) to wait before checking db for budget resets. |
+| proxy_budget_rescheduler_max_time | int | The maximum time (in seconds) to wait before checking db for budget resets. |
+| proxy_batch_write_at | int | Time (in seconds) to wait before batch writing spend logs to the db. |
+| alerting_args | dict | Args for Slack Alerting [Doc on Slack Alerting](./alerting.md) |
+| custom_key_generate | str | Custom function for key generation [Doc on custom key generation](./virtual_keys.md#custom--key-generate) |
+| allowed_ips | List[str] | List of IPs allowed to access the proxy. If not set, all IPs are allowed. |
+| embedding_model | str | The default model to use for embeddings - ignores model set in request |
+| default_team_disabled | boolean | If true, users cannot create 'personal' keys (keys with no team_id). |
+| alert_to_webhook_url | Dict[str] | [Specify a webhook url for each alert type.](./alerting.md#set-specific-slack-channels-per-alert-type) |
+| key_management_settings | List[Dict[str, Any]] | Settings for key management system (e.g. AWS KMS, Azure Key Vault) [Doc on key management](../secret.md) |
+| allow_user_auth | boolean | (Deprecated) old approach for user authentication. |
+| user_api_key_cache_ttl | int | The time (in seconds) to cache user api keys in memory. |
+| disable_prisma_schema_update | boolean | If true, turns off automatic schema updates to DB |
+| litellm_key_header_name | str | If set, allows passing LiteLLM keys as a custom header. [Doc on custom headers](./virtual_keys.md#custom-headers) |
+| moderation_model | str | The default model to use for moderation. |
+| custom_sso | str | Path to a python file that implements custom SSO logic. [Doc on custom SSO](./custom_sso.md) |
+| allow_client_side_credentials | boolean | If true, allows passing client side credentials to the proxy. (Useful when testing finetuning models) [Doc on client side credentials](./virtual_keys.md#client-side-credentials) |
+| admin_only_routes | List[str] | (Enterprise Feature) List of routes that are only accessible to admin users. [Doc on admin only routes](./enterprise#control-available-public-private-routes) |
+| use_azure_key_vault | boolean | If true, load keys from azure key vault | 
+| use_google_kms | boolean | If true, load keys from google kms |
+| spend_report_frequency | str | Specify how often you want a Spend Report to be sent (e.g. "1d", "2d", "30d") [More on this](./alerting.md#spend-report-frequency) |
+| ui_access_mode | Literal["admin_only"] | If set, restricts access to the UI to admin users only. [Docs](./ui.md#restrict-ui-access) |
+| litellm_jwtauth | Dict[str, Any] | Settings for JWT authentication. [Docs](./token_auth.md) |
+| litellm_license | str | The license key for the proxy. [Docs](../enterprise.md#how-does-deployment-with-enterprise-license-work) |
+| oauth2_config_mappings | Dict[str, str] | Define the OAuth2 config mappings | 
+| pass_through_endpoints | List[Dict[str, Any]] | Define the pass through endpoints. [Docs](./pass_through) |
+| enable_oauth2_proxy_auth | boolean | (Enterprise Feature) If true, enables oauth2.0 authentication |
 ### router_settings - Reference
 
 ```yaml

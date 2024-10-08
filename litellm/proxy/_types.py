@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Extra, Field, Json, model_validator
 from typing_extensions import Annotated, TypedDict
 
-from litellm.integrations.SlackAlerting.types import AlertType
+from litellm.types.integrations.slack_alerting import AlertType
 from litellm.types.router import RouterErrors, UpdateRouterConfig
 from litellm.types.utils import ProviderField, StandardCallbackDynamicParams
 
@@ -1927,10 +1927,10 @@ class CurrentItemRateLimit(TypedDict):
 
 class LoggingCallbackStatus(TypedDict, total=False):
     callbacks: List[str]
-    status: str
+    status: Literal["healthy", "unhealthy"]
     details: Optional[str]
 
 
 class KeyHealthResponse(TypedDict, total=False):
-    key: str
+    key: Literal["healthy", "unhealthy"]
     logging_callbacks: Optional[LoggingCallbackStatus]

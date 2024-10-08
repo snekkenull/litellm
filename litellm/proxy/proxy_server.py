@@ -114,10 +114,7 @@ from litellm import (
 from litellm._logging import verbose_proxy_logger, verbose_router_logger
 from litellm.caching import DualCache, RedisCache
 from litellm.exceptions import RejectedRequestError
-from litellm.integrations.SlackAlerting.slack_alerting import (
-    SlackAlerting,
-    SlackAlertingArgs,
-)
+from litellm.integrations.SlackAlerting.slack_alerting import SlackAlerting
 from litellm.litellm_core_utils.core_helpers import (
     _get_parent_otel_span_from_kwargs,
     get_litellm_metadata_from_kwargs,
@@ -249,6 +246,7 @@ from litellm.secret_managers.aws_secret_manager import (
 )
 from litellm.secret_managers.google_kms import load_google_kms
 from litellm.secret_managers.main import get_secret, get_secret_str, str_to_bool
+from litellm.types.integrations.slack_alerting import SlackAlertingArgs
 from litellm.types.llms.anthropic import (
     AnthropicMessagesRequest,
     AnthropicResponse,
@@ -6031,7 +6029,8 @@ async def end_user_info(
         )
 
     user_info = await prisma_client.db.litellm_endusertable.find_first(
-        where={"user_id": end_user_id}
+        where={"user_id": end_user_id},
+        include={"litellm_budget_table": True}
     )
 
     if user_info is None:
@@ -6273,7 +6272,9 @@ async def list_team(
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
 
-    response = await prisma_client.db.litellm_endusertable.find_many()
+    response = await prisma_client.db.litellm_endusertable.find_many(
+        include={"litellm_budget_table": True}
+    )
 
     returned_response: List[LiteLLM_EndUserTable] = []
     for item in response:
