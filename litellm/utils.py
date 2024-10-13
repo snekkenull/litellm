@@ -14,7 +14,6 @@ import binascii
 import copy
 import datetime
 import hashlib
-import imghdr
 import inspect
 import io
 import itertools
@@ -61,7 +60,6 @@ from litellm.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.litellm_core_utils.exception_mapping_utils import (
-    _get_litellm_response_headers,
     _get_response_headers,
     exception_type,
     get_error_message,
@@ -83,6 +81,7 @@ from litellm.types.llms.openai import (
     ChatCompletionToolParam,
     ChatCompletionToolParamFunctionChunk,
 )
+from litellm.types.rerank import RerankResponse
 from litellm.types.utils import FileTypes  # type: ignore
 from litellm.types.utils import (
     OPENAI_RESPONSE_HEADERS,
@@ -198,7 +197,6 @@ lagoLogger = None
 dataDogLogger = None
 prometheusLogger = None
 dynamoLogger = None
-s3Logger = None
 genericAPILogger = None
 clickHouseLogger = None
 greenscaleLogger = None
@@ -722,6 +720,7 @@ def client(original_function):
             or kwargs.get("atext_completion", False) is True
             or kwargs.get("atranscription", False) is True
             or kwargs.get("arerank", False) is True
+            or kwargs.get("_arealtime", False) is True
         ):
             # [OPTIONAL] CHECK MAX RETRIES / REQUEST
             if litellm.num_retries_per_request is not None:
@@ -821,6 +820,8 @@ def client(original_function):
                 and kwargs.get("acompletion", False) is not True
                 and kwargs.get("aimg_generation", False) is not True
                 and kwargs.get("atranscription", False) is not True
+                and kwargs.get("arerank", False) is not True
+                and kwargs.get("_arealtime", False) is not True
             ):  # allow users to control returning cached responses from the completion function
                 # checking cache
                 print_verbose("INSIDE CHECKING CACHE")
@@ -837,7 +838,6 @@ def client(original_function):
                     )
                     cached_result = litellm.cache.get_cache(*args, **kwargs)
                     if cached_result is not None:
-                        print_verbose("Cache Hit!")
                         if "detail" in cached_result:
                             # implies an error occurred
                             pass
@@ -869,7 +869,13 @@ def client(original_function):
                                     response_object=cached_result,
                                     response_type="embedding",
                                 )
-
+                            elif call_type == CallTypes.rerank.value and isinstance(
+                                cached_result, dict
+                            ):
+                                cached_result = convert_to_model_response_object(
+                                    response_object=cached_result,
+                                    response_type="rerank",
+                                )
                             # LOG SUCCESS
                             cache_hit = True
                             end_time = datetime.datetime.now()
@@ -918,6 +924,12 @@ def client(original_function):
                                 target=logging_obj.success_handler,
                                 args=(cached_result, start_time, end_time, cache_hit),
                             ).start()
+                            cache_key = kwargs.get("preset_cache_key", None)
+                            if (
+                                isinstance(cached_result, BaseModel)
+                                or isinstance(cached_result, CustomStreamWrapper)
+                            ) and hasattr(cached_result, "_hidden_params"):
+                                cached_result._hidden_params["cache_key"] = cache_key  # type: ignore
                             return cached_result
                     else:
                         print_verbose(
@@ -993,8 +1005,7 @@ def client(original_function):
             if (
                 litellm.cache is not None
                 and litellm.cache.supported_call_types is not None
-                and str(original_function.__name__)
-                in litellm.cache.supported_call_types
+                and call_type in litellm.cache.supported_call_types
             ) and (kwargs.get("cache", {}).get("no-store", False) is not True):
                 litellm.cache.add_cache(result, *args, **kwargs)
 
@@ -1259,6 +1270,14 @@ def client(original_function):
                                 model_response_object=EmbeddingResponse(),
                                 response_type="embedding",
                             )
+                        elif call_type == CallTypes.arerank.value and isinstance(
+                            cached_result, dict
+                        ):
+                            cached_result = convert_to_model_response_object(
+                                response_object=cached_result,
+                                model_response_object=None,
+                                response_type="rerank",
+                            )
                         elif call_type == CallTypes.atranscription.value and isinstance(
                             cached_result, dict
                         ):
@@ -1411,6 +1430,8 @@ def client(original_function):
                     )
                 else:
                     return result
+            elif call_type == CallTypes.arealtime.value:
+                return result
 
             # ADD HIDDEN PARAMS - additional call metadata
             if hasattr(result, "_hidden_params"):
@@ -1460,6 +1481,7 @@ def client(original_function):
                     isinstance(result, litellm.ModelResponse)
                     or isinstance(result, litellm.EmbeddingResponse)
                     or isinstance(result, TranscriptionResponse)
+                    or isinstance(result, RerankResponse)
                 ):
                     if (
                         isinstance(result, EmbeddingResponse)
@@ -1801,6 +1823,26 @@ def calculate_tiles_needed(
     return total_tiles
 
 
+def get_image_type(image_data: bytes) -> Union[str, None]:
+    """take an image (really only the first ~100 bytes max are needed)
+    and return 'png' 'gif' 'jpeg' 'heic' or None. method added to
+    allow deprecation of imghdr in 3.13"""
+
+    if image_data[0:8] == b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a":
+        return "png"
+
+    if image_data[0:4] == b"GIF8" and image_data[5:6] == b"a":
+        return "gif"
+
+    if image_data[0:3] == b"\xff\xd8\xff":
+        return "jpeg"
+
+    if image_data[4:8] == b"ftyp":
+        return "heic"
+
+    return None
+
+
 def get_image_dimensions(data):
     img_data = None
 
@@ -1815,7 +1857,7 @@ def get_image_dimensions(data):
         header, encoded = data.split(",", 1)
         img_data = base64.b64decode(encoded)
 
-    img_type = imghdr.what(None, h=img_data)
+    img_type = get_image_type(img_data)
 
     if img_type == "png":
         w, h = struct.unpack(">LL", img_data[16:24])
@@ -2771,6 +2813,11 @@ def get_optional_params_embeddings(
 
 
 def _remove_additional_properties(schema):
+    """
+    clean out 'additionalProperties = False'. Causes vertexai/gemini OpenAI API Schema errors - https://github.com/langchain-ai/langchainjs/issues/5240
+
+    Relevant Issues: https://github.com/BerriAI/litellm/issues/6136, https://github.com/BerriAI/litellm/issues/6088
+    """
     if isinstance(schema, dict):
         # Remove the 'additionalProperties' key if it exists and is set to False
         if "additionalProperties" in schema and schema["additionalProperties"] is False:
@@ -2789,6 +2836,9 @@ def _remove_additional_properties(schema):
 
 
 def _remove_strict_from_schema(schema):
+    """
+    Relevant Issues: https://github.com/BerriAI/litellm/issues/6136, https://github.com/BerriAI/litellm/issues/6088
+    """
     if isinstance(schema, dict):
         # Remove the 'additionalProperties' key if it exists and is set to False
         if "strict" in schema:
@@ -3000,37 +3050,6 @@ def get_optional_params(
         non_default_params["response_format"] = type_to_response_format_param(
             response_format=non_default_params["response_format"]
         )
-        # # clean out 'additionalProperties = False'. Causes vertexai/gemini OpenAI API Schema errors - https://github.com/langchain-ai/langchainjs/issues/5240
-        if (
-            non_default_params["response_format"] is not None
-            and non_default_params["response_format"]
-            .get("json_schema", {})
-            .get("schema")
-            is not None
-            and custom_llm_provider
-            in [
-                "gemini",
-                "vertex_ai",
-                "vertex_ai_beta",
-            ]
-        ):
-            from litellm.llms.vertex_ai_and_google_ai_studio.common_utils import (
-                _build_vertex_schema,
-            )
-
-            old_schema = copy.deepcopy(
-                non_default_params["response_format"]
-                .get("json_schema", {})
-                .get("schema")
-            )
-            new_schema = _remove_additional_properties(schema=old_schema)
-            if isinstance(new_schema, list):
-                for item in new_schema:
-                    if isinstance(item, dict):
-                        item = _build_vertex_schema(parameters=item)
-            elif isinstance(new_schema, dict):
-                new_schema = _build_vertex_schema(parameters=new_schema)
-            non_default_params["response_format"]["json_schema"]["schema"] = new_schema
     if "tools" in non_default_params and isinstance(
         non_default_params, list
     ):  # fixes https://github.com/BerriAI/litellm/issues/4933
@@ -3197,7 +3216,7 @@ def get_optional_params(
 
         if stream:
             optional_params["stream"] = stream
-            return optional_params
+            # return optional_params
         if max_tokens is not None:
             if "vicuna" in model or "flan" in model:
                 optional_params["max_length"] = max_tokens
@@ -4341,16 +4360,18 @@ def get_api_base(
         _optional_params.vertex_location is not None
         and _optional_params.vertex_project is not None
     ):
-        from litellm.llms.vertex_ai_and_google_ai_studio.vertex_ai_anthropic import (
-            create_vertex_anthropic_url,
+        from litellm.llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.main import (
+            VertexPartnerProvider,
+            create_vertex_url,
         )
 
         if "claude" in model:
-            _api_base = create_vertex_anthropic_url(
+            _api_base = create_vertex_url(
                 vertex_location=_optional_params.vertex_location,
                 vertex_project=_optional_params.vertex_project,
                 model=model,
                 stream=stream,
+                partner=VertexPartnerProvider.claude,
             )
         else:
 
@@ -4447,19 +4468,7 @@ def get_supported_openai_params(
     elif custom_llm_provider == "volcengine":
         return litellm.VolcEngineConfig().get_supported_openai_params(model=model)
     elif custom_llm_provider == "groq":
-        return [
-            "temperature",
-            "max_tokens",
-            "top_p",
-            "stream",
-            "stop",
-            "tools",
-            "tool_choice",
-            "response_format",
-            "seed",
-            "extra_headers",
-            "extra_body",
-        ]
+        return litellm.GroqChatConfig().get_supported_openai_params(model=model)
     elif custom_llm_provider == "hosted_vllm":
         return litellm.HostedVLLMChatConfig().get_supported_openai_params(model=model)
     elif custom_llm_provider == "deepseek":
@@ -4604,6 +4613,8 @@ def get_supported_openai_params(
                 return (
                     litellm.MistralTextCompletionConfig().get_supported_openai_params()
                 )
+            if model.startswith("claude"):
+                return litellm.VertexAIAnthropicConfig().get_supported_openai_params()
             return litellm.VertexAIConfig().get_supported_openai_params()
         elif request_type == "embeddings":
             return litellm.VertexAITextEmbeddingConfig().get_supported_openai_params()
@@ -4900,6 +4911,10 @@ def _strip_model_name(model: str) -> str:
     return strip_finetune
 
 
+def _get_model_info_from_model_cost(key: str) -> dict:
+    return litellm.model_cost[key]
+
+
 def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> ModelInfo:
     """
     Get a dict for the maximum tokens (context window), input_cost_per_token, output_cost_per_token  for a given model.
@@ -5041,14 +5056,16 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
             """
             Check if: (in order of specificity)
             1. 'custom_llm_provider/model' in litellm.model_cost. Checks "groq/llama3-8b-8192" if model="llama3-8b-8192" and custom_llm_provider="groq"
-            2. 'combined_stripped_model_name' in litellm.model_cost. Checks if 'gemini/gemini-1.5-flash' in model map, if 'gemini/gemini-1.5-flash-001' given.
-            3. 'stripped_model_name' in litellm.model_cost. Checks if 'ft:gpt-3.5-turbo' in model map, if 'ft:gpt-3.5-turbo:my-org:custom_suffix:id' given.
-            4. 'model' in litellm.model_cost. Checks "groq/llama3-8b-8192" in  litellm.model_cost if model="groq/llama3-8b-8192" and custom_llm_provider=None
+            2. 'model' in litellm.model_cost. Checks "gemini-1.5-pro-002" in  litellm.model_cost if model="gemini-1.5-pro-002" and custom_llm_provider=None
+            3. 'combined_stripped_model_name' in litellm.model_cost. Checks if 'gemini/gemini-1.5-flash' in model map, if 'gemini/gemini-1.5-flash-001' given.
+            4. 'stripped_model_name' in litellm.model_cost. Checks if 'ft:gpt-3.5-turbo' in model map, if 'ft:gpt-3.5-turbo:my-org:custom_suffix:id' given.
             5. 'split_model' in litellm.model_cost. Checks "llama3-8b-8192" in litellm.model_cost if model="groq/llama3-8b-8192"
             """
+            _model_info: Optional[Dict[str, Any]] = None
+            key: Optional[str] = None
             if combined_model_name in litellm.model_cost:
                 key = combined_model_name
-                _model_info = litellm.model_cost[combined_model_name]
+                _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
                 if (
                     "litellm_provider" in _model_info
@@ -5059,58 +5076,10 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                     ].startswith("vertex_ai"):
                         pass
                     else:
-                        raise Exception
-            elif combined_stripped_model_name in litellm.model_cost:
-                key = combined_stripped_model_name
-                _model_info = litellm.model_cost[combined_stripped_model_name]
-                _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
-                ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    elif custom_llm_provider == "fireworks_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("fireworks_ai"):
-                        pass
-                    else:
-                        raise Exception(
-                            "Got provider={}, Expected provider={}, for model={}".format(
-                                _model_info["litellm_provider"],
-                                custom_llm_provider,
-                                model,
-                            )
-                        )
-            elif stripped_model_name in litellm.model_cost:
-                key = stripped_model_name
-                _model_info = litellm.model_cost[stripped_model_name]
-                _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
-                ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    elif custom_llm_provider == "fireworks_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("fireworks_ai"):
-                        pass
-                    else:
-                        raise Exception(
-                            "Got provider={}, Expected provider={}, for model={}".format(
-                                _model_info["litellm_provider"],
-                                custom_llm_provider,
-                                model,
-                            )
-                        )
-            elif model in litellm.model_cost:
+                        _model_info = None
+            if _model_info is None and model in litellm.model_cost:
                 key = model
-                _model_info = litellm.model_cost[model]
+                _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
                 if (
                     "litellm_provider" in _model_info
@@ -5125,10 +5094,50 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                     ].startswith("fireworks_ai"):
                         pass
                     else:
-                        raise Exception
-            elif split_model in litellm.model_cost:
+                        _model_info = None
+            if (
+                _model_info is None
+                and combined_stripped_model_name in litellm.model_cost
+            ):
+                key = combined_stripped_model_name
+                _model_info = _get_model_info_from_model_cost(key=key)
+                _model_info["supported_openai_params"] = supported_openai_params
+                if (
+                    "litellm_provider" in _model_info
+                    and _model_info["litellm_provider"] != custom_llm_provider
+                ):
+                    if custom_llm_provider == "vertex_ai" and _model_info[
+                        "litellm_provider"
+                    ].startswith("vertex_ai"):
+                        pass
+                    elif custom_llm_provider == "fireworks_ai" and _model_info[
+                        "litellm_provider"
+                    ].startswith("fireworks_ai"):
+                        pass
+                    else:
+                        _model_info = None
+            if _model_info is None and stripped_model_name in litellm.model_cost:
+                key = stripped_model_name
+                _model_info = _get_model_info_from_model_cost(key=key)
+                _model_info["supported_openai_params"] = supported_openai_params
+                if (
+                    "litellm_provider" in _model_info
+                    and _model_info["litellm_provider"] != custom_llm_provider
+                ):
+                    if custom_llm_provider == "vertex_ai" and _model_info[
+                        "litellm_provider"
+                    ].startswith("vertex_ai"):
+                        pass
+                    elif custom_llm_provider == "fireworks_ai" and _model_info[
+                        "litellm_provider"
+                    ].startswith("fireworks_ai"):
+                        pass
+                    else:
+                        _model_info = None
+
+            if _model_info is None and split_model in litellm.model_cost:
                 key = split_model
-                _model_info = litellm.model_cost[split_model]
+                _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
                 if (
                     "litellm_provider" in _model_info
@@ -5143,8 +5152,8 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                     ].startswith("fireworks_ai"):
                         pass
                     else:
-                        raise Exception
-            else:
+                        _model_info = None
+            if _model_info is None or key is None:
                 raise ValueError(
                     "This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
                 )
@@ -5212,7 +5221,7 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                 litellm_provider=_model_info.get(
                     "litellm_provider", custom_llm_provider
                 ),
-                mode=_model_info.get("mode"),
+                mode=_model_info.get("mode"),  # type: ignore
                 supported_openai_params=supported_openai_params,
                 supports_system_messages=_model_info.get(
                     "supports_system_messages", None
@@ -5893,10 +5902,16 @@ def convert_to_streaming_response(response_object: Optional[dict] = None):
 def convert_to_model_response_object(
     response_object: Optional[dict] = None,
     model_response_object: Optional[
-        Union[ModelResponse, EmbeddingResponse, ImageResponse, TranscriptionResponse]
+        Union[
+            ModelResponse,
+            EmbeddingResponse,
+            ImageResponse,
+            TranscriptionResponse,
+            RerankResponse,
+        ]
     ] = None,
     response_type: Literal[
-        "completion", "embedding", "image_generation", "audio_transcription"
+        "completion", "embedding", "image_generation", "audio_transcription", "rerank"
     ] = "completion",
     stream=False,
     start_time=None,
@@ -6145,6 +6160,27 @@ def convert_to_model_response_object(
 
             if _response_headers is not None:
                 model_response_object._response_headers = _response_headers
+
+            return model_response_object
+        elif response_type == "rerank" and (
+            model_response_object is None
+            or isinstance(model_response_object, RerankResponse)
+        ):
+            if response_object is None:
+                raise Exception("Error in response object format")
+
+            if model_response_object is None:
+                model_response_object = RerankResponse(**response_object)
+                return model_response_object
+
+            if "id" in response_object:
+                model_response_object.id = response_object["id"]
+
+            if "meta" in response_object:
+                model_response_object.meta = response_object["meta"]
+
+            if "results" in response_object:
+                model_response_object.results = response_object["results"]
 
             return model_response_object
     except Exception:
@@ -7244,34 +7280,6 @@ class CustomStreamWrapper:
         except Exception as e:
             raise e
 
-    def handle_bedrock_stream(self, chunk):
-        return {
-            "text": chunk["text"],
-            "is_finished": chunk["is_finished"],
-            "finish_reason": chunk["finish_reason"],
-        }
-
-    def handle_sagemaker_stream(self, chunk):
-        if "data: [DONE]" in chunk:
-            text = ""
-            is_finished = True
-            finish_reason = "stop"
-            return {
-                "text": text,
-                "is_finished": is_finished,
-                "finish_reason": finish_reason,
-            }
-        elif isinstance(chunk, dict):
-            if chunk["is_finished"] is True:
-                finish_reason = "stop"
-            else:
-                finish_reason = ""
-            return {
-                "text": chunk["text"],
-                "is_finished": chunk["is_finished"],
-                "finish_reason": finish_reason,
-            }
-
     def handle_watsonx_stream(self, chunk):
         try:
             if isinstance(chunk, dict):
@@ -7419,6 +7427,10 @@ class CustomStreamWrapper:
             model_response._hidden_params = hidden_params
         model_response._hidden_params["custom_llm_provider"] = _logging_obj_llm_provider
         model_response._hidden_params["created_at"] = time.time()
+        model_response._hidden_params = {
+            **model_response._hidden_params,
+            **self._hidden_params,
+        }
 
         if (
             len(model_response.choices) > 0
@@ -9284,10 +9296,6 @@ def process_response_headers(response_headers: Union[httpx.Headers, dict]) -> di
             processed_headers[k] = v
         else:
             additional_headers["{}-{}".format("llm_provider", k)] = v
-    ## GUARANTEE OPENAI HEADERS IN RESPONSE
-    for item in OPENAI_RESPONSE_HEADERS:
-        if item not in openai_headers:
-            openai_headers[item] = None
 
     additional_headers = {
         **openai_headers,

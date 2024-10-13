@@ -32,6 +32,8 @@ from openai import AsyncOpenAI
 from typing_extensions import overload
 
 import litellm
+import litellm.litellm_core_utils
+import litellm.litellm_core_utils.exception_mapping_utils
 from litellm import get_secret_str
 from litellm._logging import verbose_router_logger
 from litellm.assistants.main import AssistantDeleted
@@ -123,6 +125,8 @@ from litellm.utils import (
     get_secret,
     get_utc_datetime,
 )
+
+from .router_utils.pattern_match_deployments import PatternMatchRouter
 
 
 class RoutingArgs(enum.Enum):
@@ -344,8 +348,8 @@ class Router:
         self.default_priority = default_priority
         self.default_deployment = None  # use this to track the users default deployment, when they want to use model = *
         self.default_max_parallel_requests = default_max_parallel_requests
-        self.provider_default_deployments: Dict[str, List] = {}
         self.provider_default_deployment_ids: List[str] = []
+        self.pattern_router = PatternMatchRouter()
 
         if model_list is not None:
             model_list = copy.deepcopy(model_list)
@@ -612,7 +616,6 @@ class Router:
         self, model: str, messages: List[Dict[str, str]], **kwargs
     ) -> Union[ModelResponse, CustomStreamWrapper]:
         model_name = None
-        traceback.print_stack()
         try:
             # pick the one that is available (lowest TPM/RPM)
             deployment = self.get_available_deployment(
@@ -3659,9 +3662,10 @@ class Router:
             kwargs.get("litellm_params", {}).get("metadata", None)
             _model_info = kwargs.get("litellm_params", {}).get("model_info", {})
 
-            exception_headers = litellm.utils._get_litellm_response_headers(
+            exception_headers = litellm.litellm_core_utils.exception_mapping_utils._get_response_headers(
                 original_exception=exception
             )
+
             _time_to_cooldown = kwargs.get("litellm_params", {}).get(
                 "cooldown_time", self.cooldown_time
             )
@@ -4147,10 +4151,6 @@ class Router:
             ),
         )
 
-        provider_specific_deployment = re.match(
-            rf"{custom_llm_provider}/\*$", deployment.model_name
-        )
-
         # Check if user is trying to use model_name == "*"
         # this is a catch all model for their specific api key
         if deployment.model_name == "*":
@@ -4161,16 +4161,12 @@ class Router:
                 self.default_deployment = deployment.to_json(exclude_none=True)
         # Check if user is using provider specific wildcard routing
         # example model_name = "databricks/*" or model_name = "anthropic/*"
-        elif provider_specific_deployment:
-            if custom_llm_provider in self.provider_default_deployments:
-                self.provider_default_deployments[custom_llm_provider].append(
-                    deployment.to_json(exclude_none=True)
-                )
-            else:
-                self.provider_default_deployments[custom_llm_provider] = [
-                    deployment.to_json(exclude_none=True)
-                ]
-
+        elif "*" in deployment.model_name:
+            # store this as a regex pattern - all deployments matching this pattern will be sent to this deployment
+            # Store deployment.model_name as a regex pattern
+            self.pattern_router.add_pattern(
+                deployment.model_name, deployment.to_json(exclude_none=True)
+            )
             if deployment.model_info.id:
                 self.provider_default_deployment_ids.append(deployment.model_info.id)
 
@@ -4433,7 +4429,7 @@ class Router:
                 is_match = True
             elif (
                 "model_name" in model
-                and model_group in self.provider_default_deployments
+                and self.pattern_router.route(model_group) is not None
             ):  # wildcard model
                 is_match = True
 
@@ -5174,7 +5170,8 @@ class Router:
                 model = _item["model"]
 
         if model not in self.model_names:
-            # check if provider/ specific wildcard routing
+            # check if provider/ specific wildcard routing use pattern matching
+            custom_llm_provider: Optional[str] = None
             try:
                 (
                     _,
@@ -5182,20 +5179,27 @@ class Router:
                     _,
                     _,
                 ) = litellm.get_llm_provider(model=model)
-                # check if custom_llm_provider
-                if custom_llm_provider in self.provider_default_deployments:
-                    _provider_deployments = self.provider_default_deployments[
-                        custom_llm_provider
-                    ]
-                    provider_deployments = []
-                    for deployment in _provider_deployments:
-                        dep = copy.deepcopy(deployment)
-                        dep["litellm_params"]["model"] = model
-                        provider_deployments.append(dep)
-                    return model, provider_deployments
             except Exception:
                 # get_llm_provider raises exception when provider is unknown
                 pass
+
+            """
+            self.pattern_router.route(model):
+                does exact pattern matching. Example openai/gpt-3.5-turbo gets routed to pattern openai/*
+
+            self.pattern_router.route(f"{custom_llm_provider}/{model}"):
+                does pattern matching using litellm.get_llm_provider(), example claude-3-5-sonnet-20240620 gets routed to anthropic/* since 'claude-3-5-sonnet-20240620' is an Anthropic Model
+            """
+            _pattern_router_response = self.pattern_router.route(
+                model
+            ) or self.pattern_router.route(f"{custom_llm_provider}/{model}")
+            if _pattern_router_response is not None:
+                provider_deployments = []
+                for deployment in _pattern_router_response:
+                    dep = copy.deepcopy(deployment)
+                    dep["litellm_params"]["model"] = model
+                    provider_deployments.append(dep)
+                return model, provider_deployments
 
             # check if default deployment is set
             if self.default_deployment is not None:

@@ -408,7 +408,6 @@ class ProxyLogging:
                     callback,
                     internal_usage_cache=self.internal_usage_cache.dual_cache,
                     llm_router=llm_router,
-                    premium_user=self.premium_user,
                 )
                 if callback is None:
                     continue
@@ -1657,6 +1656,7 @@ class PrismaClient:
                         where={
                             "members": {"has": user_id},
                         },
+                        include={"litellm_budget_table": True},
                     )
                 elif query_type == "find_all" and team_id_list is not None:
                     response = await self.db.litellm_teamtable.find_many(

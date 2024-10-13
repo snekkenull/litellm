@@ -129,6 +129,7 @@ class CallTypes(Enum):
     speech = "speech"
     rerank = "rerank"
     arerank = "arerank"
+    arealtime = "_arealtime"
 
 
 class PassthroughCallTypes(Enum):
@@ -1237,6 +1238,7 @@ all_litellm_params = [
     "client_secret",
     "user_continue_message",
     "configurable_clientside_auth_params",
+    "weight",
 ]
 
 
@@ -1416,3 +1418,17 @@ class StandardCallbackDynamicParams(TypedDict, total=False):
     # GCS dynamic params
     gcs_bucket_name: Optional[str]
     gcs_path_service_account: Optional[str]
+
+
+CachingSupportedCallTypes = Literal[
+    "completion",
+    "acompletion",
+    "embedding",
+    "aembedding",
+    "atranscription",
+    "transcription",
+    "atext_completion",
+    "text_completion",
+    "arerank",
+    "rerank",
+]
