@@ -49,7 +49,7 @@ from litellm import (
 )
 from litellm._logging import verbose_proxy_logger
 from litellm._service_logger import ServiceLogging, ServiceTypes
-from litellm.caching import DualCache, RedisCache
+from litellm.caching.caching import DualCache, RedisCache
 from litellm.exceptions import RejectedRequestError
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.integrations.custom_logger import CustomLogger
@@ -1580,15 +1580,9 @@ class PrismaClient:
                         }
                     )
                 elif query_type == "find_all" and user_id_list is not None:
-                    user_id_values = ", ".join(f"'{item}'" for item in user_id_list)
-                    sql_query = f"""
-                    SELECT *
-                    FROM "LiteLLM_UserTable"
-                    WHERE "user_id" IN ({user_id_values})
-                    """
-                    # Execute the raw query
-                    # The asterisk before `user_id_list` unpacks the list into separate arguments
-                    response = await self.db.query_raw(sql_query)
+                    response = await self.db.litellm_usertable.find_many(
+                        where={"user_id": {"in": user_id_list}}
+                    )
                 elif query_type == "find_all":
                     if expires is not None:
                         response = await self.db.litellm_usertable.find_many(  # type: ignore
