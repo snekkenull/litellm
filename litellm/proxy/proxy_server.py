@@ -464,7 +464,7 @@ user_temperature = None
 user_telemetry = True
 user_config = None
 user_headers = None
-user_config_file_path = f"config_{int(time.time())}.yaml"
+user_config_file_path: Optional[str] = None
 local_logging = True  # writes logs to a local api_log.json file for debugging
 experimental = False
 #### GLOBAL VARIABLES ####
@@ -636,18 +636,6 @@ def _resolve_pydantic_type(typ) -> List:
     elif isinstance(typ, type) and isinstance(typ, BaseModel):
         return [typ]
     return typs
-
-
-def prisma_setup(database_url: Optional[str]):
-    global prisma_client, proxy_logging_obj, user_api_key_cache
-
-    if database_url is not None:
-        try:
-            prisma_client = PrismaClient(
-                database_url=database_url, proxy_logging_obj=proxy_logging_obj
-            )
-        except Exception as e:
-            raise e
 
 
 def load_from_azure_key_vault(use_azure_key_vault: bool = False):
@@ -881,7 +869,7 @@ def _set_spend_logs_payload(
     return prisma_client
 
 
-async def update_database(
+async def update_database(  # noqa: PLR0915
     token,
     response_cost,
     user_id=None,
@@ -1063,7 +1051,7 @@ async def update_database(
         )
 
 
-async def update_cache(
+async def update_cache(  # noqa: PLR0915
     token: Optional[str],
     user_id: Optional[str],
     end_user_id: Optional[str],
@@ -1373,7 +1361,19 @@ class ProxyConfig:
         _, file_extension = os.path.splitext(config_file_path)
         return file_extension.lower() == ".yaml" or file_extension.lower() == ".yml"
 
-    async def get_config(self, config_file_path: Optional[str] = None) -> dict:
+    async def _get_config_from_file(
+        self, config_file_path: Optional[str] = None
+    ) -> dict:
+        """
+        Given a config file path, load the config from the file.
+
+        If `store_model_in_db` is True, then read the DB and update the config with the DB values.
+
+        Args:
+            config_file_path (str): path to the config file
+        Returns:
+            dict: config
+        """
         global prisma_client, user_config_file_path
 
         file_path = config_file_path or user_config_file_path
@@ -1384,6 +1384,8 @@ class ProxyConfig:
         if os.path.exists(f"{file_path}"):
             with open(f"{file_path}", "r") as config_file:
                 config = yaml.safe_load(config_file)
+        elif file_path is not None:
+            raise Exception(f"Config file not found: {file_path}")
         else:
             config = {
                 "model_list": [],
@@ -1449,6 +1451,43 @@ class ProxyConfig:
             with open(f"{user_config_file_path}", "w") as config_file:
                 yaml.dump(new_config, config_file, default_flow_style=False)
 
+    def _check_for_os_environ_vars(
+        self, config: dict, depth: int = 0, max_depth: int = 10
+    ) -> dict:
+        """
+        Check for os.environ/ variables in the config and replace them with the actual values.
+        Includes a depth limit to prevent infinite recursion.
+
+        Args:
+            config (dict): The configuration dictionary to process.
+            depth (int): Current recursion depth.
+            max_depth (int): Maximum allowed recursion depth.
+
+        Returns:
+            dict: Processed configuration dictionary.
+        """
+        if depth > max_depth:
+            verbose_proxy_logger.warning(
+                f"Maximum recursion depth ({max_depth}) reached while processing config."
+            )
+            return config
+
+        for key, value in config.items():
+            if isinstance(value, dict):
+                config[key] = self._check_for_os_environ_vars(
+                    config=value, depth=depth + 1, max_depth=max_depth
+                )
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        item = self._check_for_os_environ_vars(
+                            config=item, depth=depth + 1, max_depth=max_depth
+                        )
+            # if the value is a string and starts with "os.environ/" - then it's an environment variable
+            elif isinstance(value, str) and value.startswith("os.environ/"):
+                config[key] = get_secret(value)
+        return config
+
     async def load_team_config(self, team_id: str):
         """
         - for a given team id
@@ -1492,14 +1531,21 @@ class ProxyConfig:
             ## INIT PROXY REDIS USAGE CLIENT ##
             redis_usage_cache = litellm.cache.cache
 
-    async def load_config(
-        self, router: Optional[litellm.Router], config_file_path: str
-    ):
+    async def get_config(self, config_file_path: Optional[str] = None) -> dict:
         """
-        Load config values into proxy global state
-        """
-        global master_key, user_config_file_path, otel_logging, user_custom_auth, user_custom_auth_path, user_custom_key_generate, user_custom_sso, use_background_health_checks, health_check_interval, use_queue, proxy_budget_rescheduler_max_time, proxy_budget_rescheduler_min_time, ui_access_mode, litellm_master_key_hash, proxy_batch_write_at, disable_spend_logs, prompt_injection_detection_obj, redis_usage_cache, store_model_in_db, premium_user, open_telemetry_logger, health_check_details, callback_settings
+        Load config file
+        Supports reading from:
+        - .yaml file paths
+        - LiteLLM connected DB
+        - GCS
+        - S3
 
+        Args:
+            config_file_path (str): path to the config file
+        Returns:
+            dict: config
+
+        """
         # Load existing config
         if os.environ.get("LITELLM_CONFIG_BUCKET_NAME") is not None:
             bucket_name = os.environ.get("LITELLM_CONFIG_BUCKET_NAME")
@@ -1521,14 +1567,24 @@ class ProxyConfig:
                 raise Exception("Unable to load config from given source.")
         else:
             # default to file
-            config = await self.get_config(config_file_path=config_file_path)
+            config = await self._get_config_from_file(config_file_path=config_file_path)
         ## PRINT YAML FOR CONFIRMING IT WORKS
         printed_yaml = copy.deepcopy(config)
         printed_yaml.pop("environment_variables", None)
 
-        verbose_proxy_logger.debug(
-            f"Loaded config YAML (api_key and environment_variables are not shown):\n{json.dumps(printed_yaml, indent=2)}"
-        )
+        config = self._check_for_os_environ_vars(config=config)
+
+        return config
+
+    async def load_config(  # noqa: PLR0915
+        self, router: Optional[litellm.Router], config_file_path: str
+    ):
+        """
+        Load config values into proxy global state
+        """
+        global master_key, user_config_file_path, otel_logging, user_custom_auth, user_custom_auth_path, user_custom_key_generate, user_custom_sso, use_background_health_checks, health_check_interval, use_queue, proxy_budget_rescheduler_max_time, proxy_budget_rescheduler_min_time, ui_access_mode, litellm_master_key_hash, proxy_batch_write_at, disable_spend_logs, prompt_injection_detection_obj, redis_usage_cache, store_model_in_db, premium_user, open_telemetry_logger, health_check_details, callback_settings
+
+        config: dict = await self.get_config(config_file_path=config_file_path)
 
         ## ENVIRONMENT VARIABLES
         environment_variables = config.get("environment_variables", None)
@@ -2144,7 +2200,7 @@ class ProxyConfig:
                 added_models += 1
         return added_models
 
-    async def _update_llm_router(
+    async def _update_llm_router(  # noqa: PLR0915
         self,
         new_models: list,
         proxy_logging_obj: ProxyLogging,
@@ -2387,7 +2443,7 @@ def save_worker_config(**data):
     os.environ["WORKER_CONFIG"] = json.dumps(data)
 
 
-async def initialize(
+async def initialize(  # noqa: PLR0915
     model=None,
     alias=None,
     api_base=None,
@@ -2727,137 +2783,55 @@ def giveup(e):
     return result
 
 
-@router.on_event("startup")
-async def startup_event():
-    global prisma_client, master_key, use_background_health_checks, llm_router, llm_model_list, general_settings, proxy_budget_rescheduler_min_time, proxy_budget_rescheduler_max_time, litellm_proxy_admin_name, db_writer_client, store_model_in_db, premium_user, _license_check
-    import json
+class ProxyStartupEvent:
+    @classmethod
+    def _initialize_startup_logging(
+        cls,
+        llm_router: Optional[litellm.Router],
+        proxy_logging_obj: ProxyLogging,
+        redis_usage_cache: Optional[RedisCache],
+    ):
+        """Initialize logging and alerting on startup"""
+        ## COST TRACKING ##
+        cost_tracking()
 
-    init_verbose_loggers()
+        ## Error Tracking ##
+        error_tracking()
 
-    ### LOAD MASTER KEY ###
-    # check if master key set in environment - load from there
-    master_key = get_secret("LITELLM_MASTER_KEY", None)  # type: ignore
-    # check if DATABASE_URL in environment - load from there
-    if prisma_client is None:
-        _db_url: Optional[str] = get_secret("DATABASE_URL", None)  # type: ignore
-        prisma_setup(database_url=_db_url)
+        proxy_logging_obj.startup_event(
+            llm_router=llm_router, redis_usage_cache=redis_usage_cache
+        )
 
-    ### LOAD CONFIG ###
-    worker_config: Optional[Union[str, dict]] = get_secret("WORKER_CONFIG")  # type: ignore
-    env_config_yaml: Optional[str] = get_secret_str("CONFIG_FILE_PATH")
-    verbose_proxy_logger.debug("worker_config: %s", worker_config)
-    # check if it's a valid file path
-    if env_config_yaml is not None:
-        if os.path.isfile(env_config_yaml) and proxy_config.is_yaml(
-            config_file_path=env_config_yaml
-        ):
-            (
-                llm_router,
-                llm_model_list,
-                general_settings,
-            ) = await proxy_config.load_config(
-                router=llm_router, config_file_path=env_config_yaml
-            )
-    elif worker_config is not None:
-        if (
-            isinstance(worker_config, str)
-            and os.path.isfile(worker_config)
-            and proxy_config.is_yaml(config_file_path=worker_config)
-        ):
-            (
-                llm_router,
-                llm_model_list,
-                general_settings,
-            ) = await proxy_config.load_config(
-                router=llm_router, config_file_path=worker_config
-            )
-        elif os.environ.get("LITELLM_CONFIG_BUCKET_NAME") is not None and isinstance(
-            worker_config, str
-        ):
-            (
-                llm_router,
-                llm_model_list,
-                general_settings,
-            ) = await proxy_config.load_config(
-                router=llm_router, config_file_path=worker_config
-            )
-        elif isinstance(worker_config, dict):
-            await initialize(**worker_config)
+    @classmethod
+    def _initialize_jwt_auth(
+        cls,
+        general_settings: dict,
+        prisma_client: Optional[PrismaClient],
+        user_api_key_cache: DualCache,
+    ):
+        """Initialize JWT auth on startup"""
+        if general_settings.get("litellm_jwtauth", None) is not None:
+            for k, v in general_settings["litellm_jwtauth"].items():
+                if isinstance(v, str) and v.startswith("os.environ/"):
+                    general_settings["litellm_jwtauth"][k] = get_secret(v)
+            litellm_jwtauth = LiteLLM_JWTAuth(**general_settings["litellm_jwtauth"])
         else:
-            # if not, assume it's a json string
-            worker_config = json.loads(worker_config)
-            if isinstance(worker_config, dict):
-                await initialize(**worker_config)
-
-    ## CHECK PREMIUM USER
-    verbose_proxy_logger.debug(
-        "litellm.proxy.proxy_server.py::startup() - CHECKING PREMIUM USER - {}".format(
-            premium_user
+            litellm_jwtauth = LiteLLM_JWTAuth()
+        jwt_handler.update_environment(
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            litellm_jwtauth=litellm_jwtauth,
         )
-    )
-    if premium_user is False:
-        premium_user = _license_check.is_premium()
 
-    verbose_proxy_logger.debug(
-        "litellm.proxy.proxy_server.py::startup() - PREMIUM USER value - {}".format(
-            premium_user
-        )
-    )
-
-    ## COST TRACKING ##
-    cost_tracking()
-
-    ## Error Tracking ##
-    error_tracking()
-
-    ## UPDATE SLACK ALERTING ##
-    proxy_logging_obj.slack_alerting_instance.update_values(llm_router=llm_router)
-
-    db_writer_client = HTTPHandler()
-
-    ## UPDATE INTERNAL USAGE CACHE ##
-    proxy_logging_obj.update_values(
-        redis_cache=redis_usage_cache
-    )  # used by parallel request limiter for rate limiting keys across instances
-
-    proxy_logging_obj._init_litellm_callbacks(
-        llm_router=llm_router
-    )  # INITIALIZE LITELLM CALLBACKS ON SERVER STARTUP <- do this to catch any logging errors on startup, not when calls are being made
-
-    if "daily_reports" in proxy_logging_obj.slack_alerting_instance.alert_types:
-        asyncio.create_task(
-            proxy_logging_obj.slack_alerting_instance._run_scheduled_daily_report(
-                llm_router=llm_router
-            )
-        )  # RUN DAILY REPORT (if scheduled)
-
-    ## JWT AUTH ##
-    if general_settings.get("litellm_jwtauth", None) is not None:
-        for k, v in general_settings["litellm_jwtauth"].items():
-            if isinstance(v, str) and v.startswith("os.environ/"):
-                general_settings["litellm_jwtauth"][k] = get_secret(v)
-        litellm_jwtauth = LiteLLM_JWTAuth(**general_settings["litellm_jwtauth"])
-    else:
-        litellm_jwtauth = LiteLLM_JWTAuth()
-    jwt_handler.update_environment(
-        prisma_client=prisma_client,
-        user_api_key_cache=user_api_key_cache,
-        litellm_jwtauth=litellm_jwtauth,
-    )
-
-    if use_background_health_checks:
-        asyncio.create_task(
-            _run_background_health_check()
-        )  # start the background health check coroutine.
-
-    if prompt_injection_detection_obj is not None:
-        prompt_injection_detection_obj.update_environment(router=llm_router)
-
-    verbose_proxy_logger.debug("prisma_client: %s", prisma_client)
-    if prisma_client is not None:
-        await prisma_client.connect()
-
-    if prisma_client is not None and master_key is not None:
+    @classmethod
+    def _add_master_key_hash_to_db(
+        cls,
+        master_key: str,
+        prisma_client: PrismaClient,
+        litellm_proxy_admin_name: str,
+        general_settings: dict,
+    ):
+        """Adds master key hash to db for cost tracking"""
         if os.getenv("PROXY_ADMIN_ID", None) is not None:
             litellm_proxy_admin_name = os.getenv(
                 "PROXY_ADMIN_ID", litellm_proxy_admin_name
@@ -2866,23 +2840,25 @@ async def startup_event():
             verbose_proxy_logger.info("Skipping writing master key hash to db")
         else:
             # add master key to db
-            asyncio.create_task(
-                generate_key_helper_fn(
-                    request_type="user",
-                    duration=None,
-                    models=[],
-                    aliases={},
-                    config={},
-                    spend=0,
-                    token=master_key,
-                    user_id=litellm_proxy_admin_name,
-                    user_role=LitellmUserRoles.PROXY_ADMIN,
-                    query_type="update_data",
-                    update_key_values={"user_role": LitellmUserRoles.PROXY_ADMIN},
-                )
+            # add 'admin' user to db. Fixes https://github.com/BerriAI/litellm/issues/6206
+            task_1 = generate_key_helper_fn(
+                request_type="user",
+                duration=None,
+                models=[],
+                aliases={},
+                config={},
+                spend=0,
+                token=master_key,
+                user_id=litellm_proxy_admin_name,
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                query_type="update_data",
+                update_key_values={"user_role": LitellmUserRoles.PROXY_ADMIN},
             )
+            asyncio.create_task(task_1)
 
-    if prisma_client is not None and litellm.max_budget > 0:
+    @classmethod
+    def _add_proxy_budget_to_db(cls, litellm_proxy_budget_name: str):
+        """Adds a global proxy budget to db"""
         if litellm.budget_duration is None:
             raise Exception(
                 "budget_duration not set on Proxy. budget_duration is required to use max_budget."
@@ -2908,8 +2884,18 @@ async def startup_event():
             )
         )
 
-    ### START BATCH WRITING DB + CHECKING NEW MODELS###
-    if prisma_client is not None:
+    @classmethod
+    async def initialize_scheduled_background_jobs(
+        cls,
+        general_settings: dict,
+        prisma_client: PrismaClient,
+        proxy_budget_rescheduler_min_time: int,
+        proxy_budget_rescheduler_max_time: int,
+        proxy_batch_write_at: int,
+        proxy_logging_obj: ProxyLogging,
+        store_model_in_db: bool,
+    ):
+        """Initializes scheduled background jobs"""
         scheduler = AsyncIOScheduler()
         interval = random.randint(
             proxy_budget_rescheduler_min_time, proxy_budget_rescheduler_max_time
@@ -2998,6 +2984,165 @@ async def startup_event():
 
         scheduler.start()
 
+    @classmethod
+    def _setup_prisma_client(
+        cls,
+        database_url: Optional[str],
+        proxy_logging_obj: ProxyLogging,
+        user_api_key_cache: DualCache,
+    ) -> Optional[PrismaClient]:
+        """
+        - Sets up prisma client
+        - Adds necessary views to proxy
+        """
+        prisma_client: Optional[PrismaClient] = None
+        if database_url is not None:
+            try:
+                prisma_client = PrismaClient(
+                    database_url=database_url, proxy_logging_obj=proxy_logging_obj
+                )
+            except Exception as e:
+                raise e
+
+            ## Add necessary views to proxy ##
+            asyncio.create_task(
+                prisma_client.check_view_exists()
+            )  # check if all necessary views exist. Don't block execution
+
+        return prisma_client
+
+
+@router.on_event("startup")
+async def startup_event():
+    global prisma_client, master_key, use_background_health_checks, llm_router, llm_model_list, general_settings, proxy_budget_rescheduler_min_time, proxy_budget_rescheduler_max_time, litellm_proxy_admin_name, db_writer_client, store_model_in_db, premium_user, _license_check
+    import json
+
+    init_verbose_loggers()
+
+    ### LOAD MASTER KEY ###
+    # check if master key set in environment - load from there
+    master_key = get_secret("LITELLM_MASTER_KEY", None)  # type: ignore
+    # check if DATABASE_URL in environment - load from there
+    if prisma_client is None:
+        _db_url: Optional[str] = get_secret("DATABASE_URL", None)  # type: ignore
+        prisma_client = ProxyStartupEvent._setup_prisma_client(
+            database_url=_db_url,
+            proxy_logging_obj=proxy_logging_obj,
+            user_api_key_cache=user_api_key_cache,
+        )
+
+    ### LOAD CONFIG ###
+    worker_config: Optional[Union[str, dict]] = get_secret("WORKER_CONFIG")  # type: ignore
+    env_config_yaml: Optional[str] = get_secret_str("CONFIG_FILE_PATH")
+    verbose_proxy_logger.debug("worker_config: %s", worker_config)
+    # check if it's a valid file path
+    if env_config_yaml is not None:
+        if os.path.isfile(env_config_yaml) and proxy_config.is_yaml(
+            config_file_path=env_config_yaml
+        ):
+            (
+                llm_router,
+                llm_model_list,
+                general_settings,
+            ) = await proxy_config.load_config(
+                router=llm_router, config_file_path=env_config_yaml
+            )
+    elif worker_config is not None:
+        if (
+            isinstance(worker_config, str)
+            and os.path.isfile(worker_config)
+            and proxy_config.is_yaml(config_file_path=worker_config)
+        ):
+            (
+                llm_router,
+                llm_model_list,
+                general_settings,
+            ) = await proxy_config.load_config(
+                router=llm_router, config_file_path=worker_config
+            )
+        elif os.environ.get("LITELLM_CONFIG_BUCKET_NAME") is not None and isinstance(
+            worker_config, str
+        ):
+            (
+                llm_router,
+                llm_model_list,
+                general_settings,
+            ) = await proxy_config.load_config(
+                router=llm_router, config_file_path=worker_config
+            )
+        elif isinstance(worker_config, dict):
+            await initialize(**worker_config)
+        else:
+            # if not, assume it's a json string
+            worker_config = json.loads(worker_config)
+            if isinstance(worker_config, dict):
+                await initialize(**worker_config)
+
+    ## CHECK PREMIUM USER
+    verbose_proxy_logger.debug(
+        "litellm.proxy.proxy_server.py::startup() - CHECKING PREMIUM USER - {}".format(
+            premium_user
+        )
+    )
+    if premium_user is False:
+        premium_user = _license_check.is_premium()
+
+    verbose_proxy_logger.debug(
+        "litellm.proxy.proxy_server.py::startup() - PREMIUM USER value - {}".format(
+            premium_user
+        )
+    )
+
+    ProxyStartupEvent._initialize_startup_logging(
+        llm_router=llm_router,
+        proxy_logging_obj=proxy_logging_obj,
+        redis_usage_cache=redis_usage_cache,
+    )
+
+    ## JWT AUTH ##
+    ProxyStartupEvent._initialize_jwt_auth(
+        general_settings=general_settings,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+    )
+
+    if use_background_health_checks:
+        asyncio.create_task(
+            _run_background_health_check()
+        )  # start the background health check coroutine.
+
+    if prompt_injection_detection_obj is not None:  # [TODO] - REFACTOR THIS
+        prompt_injection_detection_obj.update_environment(router=llm_router)
+
+    verbose_proxy_logger.debug("prisma_client: %s", prisma_client)
+    if prisma_client is not None:
+        await prisma_client.connect()
+
+    if prisma_client is not None and master_key is not None:
+        ProxyStartupEvent._add_master_key_hash_to_db(
+            master_key=master_key,
+            prisma_client=prisma_client,
+            litellm_proxy_admin_name=litellm_proxy_admin_name,
+            general_settings=general_settings,
+        )
+
+    if prisma_client is not None and litellm.max_budget > 0:
+        ProxyStartupEvent._add_proxy_budget_to_db(
+            litellm_proxy_budget_name=litellm_proxy_admin_name
+        )
+
+    ### START BATCH WRITING DB + CHECKING NEW MODELS###
+    if prisma_client is not None:
+        await ProxyStartupEvent.initialize_scheduled_background_jobs(
+            general_settings=general_settings,
+            prisma_client=prisma_client,
+            proxy_budget_rescheduler_min_time=proxy_budget_rescheduler_min_time,
+            proxy_budget_rescheduler_max_time=proxy_budget_rescheduler_max_time,
+            proxy_batch_write_at=proxy_batch_write_at,
+            proxy_logging_obj=proxy_logging_obj,
+            store_model_in_db=store_model_in_db,
+        )
+
 
 #### API ENDPOINTS ####
 @router.get(
@@ -3078,7 +3223,7 @@ async def model_list(
     giveup=giveup,
     logger=verbose_proxy_logger,
 )
-async def chat_completion(
+async def chat_completion(  # noqa: PLR0915
     request: Request,
     fastapi_response: Response,
     model: Optional[str] = None,
@@ -3357,7 +3502,7 @@ async def chat_completion(
     dependencies=[Depends(user_api_key_auth)],
     tags=["completions"],
 )
-async def completion(
+async def completion(  # noqa: PLR0915
     request: Request,
     fastapi_response: Response,
     model: Optional[str] = None,
@@ -3580,7 +3725,7 @@ async def completion(
     response_class=ORJSONResponse,
     tags=["embeddings"],
 )  # azure compatible endpoint
-async def embeddings(
+async def embeddings(  # noqa: PLR0915
     request: Request,
     fastapi_response: Response,
     model: Optional[str] = None,
@@ -5469,7 +5614,7 @@ async def moderations(
     dependencies=[Depends(user_api_key_auth)],
     response_model=AnthropicResponse,
 )
-async def anthropic_response(
+async def anthropic_response(  # noqa: PLR0915
     anthropic_data: AnthropicMessagesRequest,
     fastapi_response: Response,
     request: Request,
@@ -7278,7 +7423,7 @@ async def model_metrics_exceptions(
     tags=["model management"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def model_info_v1(
+async def model_info_v1(  # noqa: PLR0915
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     litellm_model_id: Optional[str] = None,
 ):
@@ -7985,7 +8130,7 @@ async def fallback_login(request: Request):
 @router.post(
     "/login", include_in_schema=False
 )  # hidden since this is a helper for UI sso login
-async def login(request: Request):
+async def login(request: Request):  # noqa: PLR0915
     global premium_user, general_settings
     try:
         import multipart
@@ -8038,16 +8183,16 @@ async def login(request: Request):
     ):
         # Non SSO -> If user is using UI_USERNAME and UI_PASSWORD they are Proxy admin
         user_role = LitellmUserRoles.PROXY_ADMIN
-        user_id = username
+        user_id = litellm_proxy_admin_name
 
         # we want the key created to have PROXY_ADMIN_PERMISSIONS
         key_user_id = litellm_proxy_admin_name
         if (
             os.getenv("PROXY_ADMIN_ID", None) is not None
             and os.environ["PROXY_ADMIN_ID"] == user_id
-        ) or user_id == "admin":
+        ) or user_id == litellm_proxy_admin_name:
             # checks if user is admin
-            key_user_id = os.getenv("PROXY_ADMIN_ID", "default_user_id")
+            key_user_id = os.getenv("PROXY_ADMIN_ID", litellm_proxy_admin_name)
 
         # Admin is Authe'd in - generate key for the UI to access Proxy
 
@@ -8092,7 +8237,7 @@ async def login(request: Request):
             {
                 "user_id": user_id,
                 "key": key,
-                "user_email": user_id,
+                "user_email": None,
                 "user_role": user_role,  # this is the path without sso - we can assume only admins will use this
                 "login_method": "username_password",
                 "premium_user": premium_user,
@@ -8653,7 +8798,7 @@ async def invitation_delete(
     dependencies=[Depends(user_api_key_auth)],
     include_in_schema=False,
 )
-async def update_config(config_info: ConfigYAML):
+async def update_config(config_info: ConfigYAML):  # noqa: PLR0915
     """
     For Admin UI - allows admin to update config via UI
 
@@ -9156,7 +9301,7 @@ async def delete_config_general_settings(
     include_in_schema=False,
     dependencies=[Depends(user_api_key_auth)],
 )
-async def get_config():
+async def get_config():  # noqa: PLR0915
     """
     For Admin UI - allows admin to view config via UI
     # return the callbacks and the env variables for the callback

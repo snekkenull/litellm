@@ -63,10 +63,7 @@ from litellm.router_utils.batch_utils import (
     _get_router_metadata_variable_name,
     replace_model_in_jsonl,
 )
-from litellm.router_utils.client_initalization_utils import (
-    set_client,
-    should_initialize_sync_client,
-)
+from litellm.router_utils.client_initalization_utils import InitalizeOpenAISDKClient
 from litellm.router_utils.cooldown_cache import CooldownCache
 from litellm.router_utils.cooldown_callbacks import router_cooldown_event_callback
 from litellm.router_utils.cooldown_handlers import (
@@ -104,6 +101,7 @@ from litellm.types.llms.openai import (
     Thread,
 )
 from litellm.types.router import (
+    CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS,
     SPECIAL_MODEL_INFO_PARAMS,
     VALID_LITELLM_ENVIRONMENTS,
     AlertingConfig,
@@ -155,7 +153,7 @@ class Router:
     leastbusy_logger: Optional[LeastBusyLoggingHandler] = None
     lowesttpm_logger: Optional[LowestTPMLoggingHandler] = None
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         model_list: Optional[
             Union[List[DeploymentTypedDict], List[Dict[str, Any]]]
@@ -2564,7 +2562,7 @@ class Router:
 
     #### [END] ASSISTANTS API ####
 
-    async def async_function_with_fallbacks(self, *args, **kwargs):
+    async def async_function_with_fallbacks(self, *args, **kwargs):  # noqa: PLR0915
         """
         Try calling the function_with_retries
         If it fails after num_retries, fall back to another model group
@@ -3950,7 +3948,7 @@ class Router:
             raise Exception(f"Unsupported provider - {custom_llm_provider}")
 
         # init OpenAI, Azure clients
-        set_client(
+        InitalizeOpenAISDKClient.set_client(
             litellm_router_instance=self, model=deployment.to_json(exclude_none=True)
         )
 
@@ -4169,7 +4167,7 @@ class Router:
         model_name = model_info["model_name"]
         return self.get_model_list(model_name=model_name)
 
-    def _set_model_group_info(
+    def _set_model_group_info(  # noqa: PLR0915
         self, model_group: str, user_facing_model_group_name: str
     ) -> Optional[ModelGroupInfo]:
         """
@@ -4183,7 +4181,7 @@ class Router:
 
         total_tpm: Optional[int] = None
         total_rpm: Optional[int] = None
-        configurable_clientside_auth_params: Optional[List[str]] = None
+        configurable_clientside_auth_params: CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = None
 
         for model in self.model_list:
             is_match = False
@@ -4660,7 +4658,9 @@ class Router:
                     """
                     Re-initialize the client
                     """
-                    set_client(litellm_router_instance=self, model=deployment)
+                    InitalizeOpenAISDKClient.set_client(
+                        litellm_router_instance=self, model=deployment
+                    )
                     client = self.cache.get_cache(key=cache_key, local_only=True)
                 return client
             else:
@@ -4670,7 +4670,9 @@ class Router:
                     """
                     Re-initialize the client
                     """
-                    set_client(litellm_router_instance=self, model=deployment)
+                    InitalizeOpenAISDKClient.set_client(
+                        litellm_router_instance=self, model=deployment
+                    )
                     client = self.cache.get_cache(key=cache_key, local_only=True)
                 return client
         else:
@@ -4681,7 +4683,9 @@ class Router:
                     """
                     Re-initialize the client
                     """
-                    set_client(litellm_router_instance=self, model=deployment)
+                    InitalizeOpenAISDKClient.set_client(
+                        litellm_router_instance=self, model=deployment
+                    )
                     client = self.cache.get_cache(key=cache_key)
                 return client
             else:
@@ -4691,11 +4695,13 @@ class Router:
                     """
                     Re-initialize the client
                     """
-                    set_client(litellm_router_instance=self, model=deployment)
+                    InitalizeOpenAISDKClient.set_client(
+                        litellm_router_instance=self, model=deployment
+                    )
                     client = self.cache.get_cache(key=cache_key)
                 return client
 
-    def _pre_call_checks(
+    def _pre_call_checks(  # noqa: PLR0915
         self,
         model: str,
         healthy_deployments: List,

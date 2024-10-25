@@ -173,6 +173,26 @@ def test_chat_completion(mock_acompletion, client_no_auth):
         pytest.fail(f"LiteLLM Proxy test failed. Exception - {str(e)}")
 
 
+def test_get_settings_request_timeout(client_no_auth):
+    """
+    When no timeout is set, it should use the litellm.request_timeout value
+    """
+    # Set a known value for litellm.request_timeout
+    import litellm
+
+    # Make a GET request to /settings
+    response = client_no_auth.get("/settings")
+
+    # Check if the request was successful
+    assert response.status_code == 200
+
+    # Parse the JSON response
+    settings = response.json()
+    print("settings", settings)
+
+    assert settings["litellm.request_timeout"] == litellm.request_timeout
+
+
 @pytest.mark.parametrize(
     "litellm_key_header_name",
     ["x-litellm-key", None],
@@ -183,7 +203,7 @@ def test_add_headers_to_request(litellm_key_header_name):
     import json
     from litellm.proxy.litellm_pre_call_utils import (
         clean_headers,
-        get_forwardable_headers,
+        LiteLLMProxyRequestSetup,
     )
 
     headers = {
@@ -195,7 +215,9 @@ def test_add_headers_to_request(litellm_key_header_name):
     request._url = URL(url="/chat/completions")
     request._body = json.dumps({"model": "gpt-3.5-turbo"}).encode("utf-8")
     request_headers = clean_headers(headers, litellm_key_header_name)
-    forwarded_headers = get_forwardable_headers(request_headers)
+    forwarded_headers = LiteLLMProxyRequestSetup._get_forwardable_headers(
+        request_headers
+    )
     assert forwarded_headers == {"X-Custom-Header": "Custom-Value"}
 
 
@@ -1874,3 +1896,27 @@ async def test_proxy_model_group_info_rerank(prisma_client):
 #         asyncio.run(test())
 #     except Exception as e:
 #         pytest.fail(f"An exception occurred - {str(e)}")
+
+
+@pytest.mark.asyncio
+async def test_proxy_server_prisma_setup():
+    from litellm.proxy.proxy_server import ProxyStartupEvent
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.caching import DualCache
+
+    user_api_key_cache = DualCache()
+
+    with patch.object(
+        litellm.proxy.proxy_server, "PrismaClient", new=MagicMock()
+    ) as mock_prisma_client:
+        mock_client = mock_prisma_client.return_value  # This is the mocked instance
+        mock_client.check_view_exists = AsyncMock()  # Mock the check_view_exists method
+
+        ProxyStartupEvent._setup_prisma_client(
+            database_url=os.getenv("DATABASE_URL"),
+            proxy_logging_obj=ProxyLogging(user_api_key_cache=user_api_key_cache),
+            user_api_key_cache=user_api_key_cache,
+        )
+
+        await asyncio.sleep(1)
+        mock_client.check_view_exists.assert_called_once()
