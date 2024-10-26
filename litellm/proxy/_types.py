@@ -104,7 +104,7 @@ class LitellmUserRoles(str, enum.Enum):
         return ui_labels.get(self.value, "")
 
 
-class LitellmTableNames(enum.Enum):
+class LitellmTableNames(str, enum.Enum):
     """
     Enum for Table Names used by LiteLLM
     """
@@ -340,6 +340,7 @@ class LiteLLMRoutes(enum.Enum):
         "/sso/get/ui_settings",
         "/login",
         "/key/generate",
+        "/key/{token_id}/regenerate",
         "/key/update",
         "/key/info",
         "/key/delete",
