@@ -42,6 +42,7 @@ from litellm.types.utils import (
     ImageResponse,
     ModelResponse,
     StandardCallbackDynamicParams,
+    StandardLoggingAdditionalHeaders,
     StandardLoggingHiddenParams,
     StandardLoggingMetadata,
     StandardLoggingModelCostFailureDebugInformation,
@@ -64,6 +65,7 @@ from ..integrations.arize_ai import ArizeLogger
 from ..integrations.athina import AthinaLogger
 from ..integrations.braintrust_logging import BraintrustLogger
 from ..integrations.datadog.datadog import DataDogLogger
+from ..integrations.datadog.datadog_llm_obs import DataDogLLMObsLogger
 from ..integrations.dynamodb import DyanmoDBLogger
 from ..integrations.galileo import GalileoObserve
 from ..integrations.gcs_bucket.gcs_bucket import GCSBucketLogger
@@ -2205,6 +2207,10 @@ def _init_custom_logger_compatible_class(  # noqa: PLR0915
         _datadog_logger = DataDogLogger()
         _in_memory_loggers.append(_datadog_logger)
         return _datadog_logger  # type: ignore
+    elif logging_integration == "datadog_llm_observability":
+        _datadog_llm_obs_logger = DataDogLLMObsLogger()
+        _in_memory_loggers.append(_datadog_llm_obs_logger)
+        return _datadog_llm_obs_logger  # type: ignore
     elif logging_integration == "gcs_bucket":
         for callback in _in_memory_loggers:
             if isinstance(callback, GCSBucketLogger):
@@ -2372,6 +2378,10 @@ def get_custom_logger_compatible_class(
         for callback in _in_memory_loggers:
             if isinstance(callback, DataDogLogger):
                 return callback
+    elif logging_integration == "datadog_llm_observability":
+        for callback in _in_memory_loggers:
+            if isinstance(callback, DataDogLLMObsLogger):
+                return callback
     elif logging_integration == "gcs_bucket":
         for callback in _in_memory_loggers:
             if isinstance(callback, GCSBucketLogger):
@@ -2464,6 +2474,14 @@ class StandardLoggingPayloadSetup:
     ) -> Tuple[float, float, float]:
         """
         Convert datetime objects to floats
+
+        Args:
+            start_time: Union[dt_object, float]
+            end_time: Union[dt_object, float]
+            completion_start_time: Union[dt_object, float]
+
+        Returns:
+            Tuple[float, float, float]: A tuple containing the start time, end time, and completion start time as floats.
         """
 
         if isinstance(start_time, datetime.datetime):
@@ -2524,13 +2542,10 @@ class StandardLoggingPayloadSetup:
         )
         if isinstance(metadata, dict):
             # Filter the metadata dictionary to include only the specified keys
-            clean_metadata = StandardLoggingMetadata(
-                **{  # type: ignore
-                    key: metadata[key]
-                    for key in StandardLoggingMetadata.__annotations__.keys()
-                    if key in metadata
-                }
-            )
+            supported_keys = StandardLoggingMetadata.__annotations__.keys()
+            for key in supported_keys:
+                if key in metadata:
+                    clean_metadata[key] = metadata[key]  # type: ignore
 
             if metadata.get("user_api_key") is not None:
                 if is_valid_sha256_hash(str(metadata.get("user_api_key"))):
@@ -2631,6 +2646,52 @@ class StandardLoggingPayloadSetup:
 
         return final_response_obj
 
+    @staticmethod
+    def get_additional_headers(
+        additiona_headers: Optional[dict],
+    ) -> Optional[StandardLoggingAdditionalHeaders]:
+
+        if additiona_headers is None:
+            return None
+
+        additional_logging_headers: StandardLoggingAdditionalHeaders = {}
+
+        for key in StandardLoggingAdditionalHeaders.__annotations__.keys():
+            _key = key.lower()
+            _key = _key.replace("_", "-")
+            if _key in additiona_headers:
+                try:
+                    additional_logging_headers[key] = int(additiona_headers[_key])  # type: ignore
+                except (ValueError, TypeError):
+                    verbose_logger.debug(
+                        f"Could not convert {additiona_headers[_key]} to int for key {key}."
+                    )
+        return additional_logging_headers
+
+    @staticmethod
+    def get_hidden_params(
+        hidden_params: Optional[dict],
+    ) -> StandardLoggingHiddenParams:
+        clean_hidden_params = StandardLoggingHiddenParams(
+            model_id=None,
+            cache_key=None,
+            api_base=None,
+            response_cost=None,
+            additional_headers=None,
+        )
+        if hidden_params is not None:
+            for key in StandardLoggingHiddenParams.__annotations__.keys():
+                if key in hidden_params:
+                    if key == "additional_headers":
+                        clean_hidden_params["additional_headers"] = (
+                            StandardLoggingPayloadSetup.get_additional_headers(
+                                hidden_params[key]
+                            )
+                        )
+                    else:
+                        clean_hidden_params[key] = hidden_params[key]  # type: ignore
+        return clean_hidden_params
+
 
 def get_standard_logging_object_payload(
     kwargs: Optional[dict],
@@ -2662,7 +2723,9 @@ def get_standard_logging_object_payload(
             if response_headers is not None:
                 hidden_params = dict(
                     StandardLoggingHiddenParams(
-                        additional_headers=dict(response_headers),
+                        additional_headers=StandardLoggingPayloadSetup.get_additional_headers(
+                            dict(response_headers)
+                        ),
                         model_id=None,
                         cache_key=None,
                         api_base=None,
@@ -2703,21 +2766,9 @@ def get_standard_logging_object_payload(
             )
         )
         # clean up litellm hidden params
-        clean_hidden_params = StandardLoggingHiddenParams(
-            model_id=None,
-            cache_key=None,
-            api_base=None,
-            response_cost=None,
-            additional_headers=None,
+        clean_hidden_params = StandardLoggingPayloadSetup.get_hidden_params(
+            hidden_params
         )
-        if hidden_params is not None:
-            clean_hidden_params = StandardLoggingHiddenParams(
-                **{  # type: ignore
-                    key: hidden_params[key]
-                    for key in StandardLoggingHiddenParams.__annotations__.keys()
-                    if key in hidden_params
-                }
-            )
         # clean up litellm metadata
         clean_metadata = StandardLoggingPayloadSetup.get_standard_logging_metadata(
             metadata=metadata

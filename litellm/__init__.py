@@ -17,7 +17,7 @@ from litellm._logging import (
     _turn_on_json,
     log_level,
 )
-
+from litellm.constants import ROUTER_MAX_FALLBACKS
 from litellm.types.guardrails import GuardrailItem
 from litellm.proxy._types import (
     KeyManagementSystem,
@@ -49,6 +49,7 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "langsmith",
     "prometheus",
     "datadog",
+    "datadog_llm_observability",
     "galileo",
     "braintrust",
     "arize",
@@ -136,6 +137,8 @@ safe_memory_mode: bool = False
 enable_azure_ad_token_refresh: Optional[bool] = False
 ### DEFAULT AZURE API VERSION ###
 AZURE_DEFAULT_API_VERSION = "2024-08-01-preview"  # this is updated to the latest
+### DEFAULT WATSONX API VERSION ###
+WATSONX_DEFAULT_API_VERSION = "2024-03-13"
 ### COHERE EMBEDDINGS DEFAULT TYPE ###
 COHERE_DEFAULT_EMBEDDING_INPUT_TYPE: COHERE_EMBEDDING_INPUT_TYPES = "search_document"
 ### GUARDRAILS ###
@@ -172,6 +175,7 @@ cache: Optional[Cache] = (
 )
 default_in_memory_ttl: Optional[float] = None
 default_redis_ttl: Optional[float] = None
+default_redis_batch_cache_expiry: Optional[float] = None
 model_alias_map: Dict[str, str] = {}
 model_group_alias_map: Dict[str, str] = {}
 max_budget: float = 0.0  # set the max budget across all providers
@@ -280,9 +284,12 @@ priority_reservation: Optional[Dict[str, float]] = None
 #### RELIABILITY ####
 REPEATED_STREAMING_CHUNK_LIMIT = 100  # catch if model starts looping the same chunk while streaming. Uses high default to prevent false positives.
 request_timeout: float = 6000  # time in seconds
-module_level_aclient = AsyncHTTPHandler(timeout=request_timeout)
+module_level_aclient = AsyncHTTPHandler(
+    timeout=request_timeout, client_alias="module level aclient"
+)
 module_level_client = HTTPHandler(timeout=request_timeout)
 num_retries: Optional[int] = None  # per model endpoint
+max_fallbacks: Optional[int] = None
 default_fallbacks: Optional[List] = None
 fallbacks: Optional[List] = None
 context_window_fallbacks: Optional[List] = None
@@ -488,6 +495,7 @@ openai_compatible_endpoints: List = [
     "app.empower.dev/api/v1",
     "inference.friendli.ai/v1",
     "api.sambanova.ai/v1",
+    "api.x.ai/v1",
 ]
 
 # this is maintained for Exception Mapping
@@ -505,6 +513,7 @@ openai_compatible_providers: List = [
     "deepinfra",
     "perplexity",
     "xinference",
+    "xai",
     "together_ai",
     "fireworks_ai",
     "empower",
@@ -513,6 +522,7 @@ openai_compatible_providers: List = [
     "github",
     "litellm_proxy",
     "hosted_vllm",
+    "lm_studio",
 ]
 openai_text_completion_compatible_providers: List = (
     [  # providers that support `/v1/completions`
@@ -521,7 +531,11 @@ openai_text_completion_compatible_providers: List = (
         "hosted_vllm",
     ]
 )
-
+_openai_like_providers: List = [
+    "predibase",
+    "databricks",
+    "watsonx",
+]  # private helper. similar to openai but require some custom auth / endpoint handling, so can't use the openai sdk
 # well supported replicate llms
 replicate_models: List = [
     # llama replicate supported LLMs
@@ -715,6 +729,7 @@ class LlmProviders(str, Enum):
     OPENAI = "openai"
     OPENAI_LIKE = "openai_like"  # embedding only
     JINA_AI = "jina_ai"
+    XAI = "xai"
     CUSTOM_OPENAI = "custom_openai"
     TEXT_COMPLETION_OPENAI = "text-completion-openai"
     COHERE = "cohere"
@@ -771,6 +786,7 @@ class LlmProviders(str, Enum):
     CUSTOM = "custom"
     LITELLM_PROXY = "litellm_proxy"
     HOSTED_VLLM = "hosted_vllm"
+    LM_STUDIO = "lm_studio"
 
 
 provider_list: List[Union[LlmProviders, str]] = list(LlmProviders)
@@ -968,10 +984,11 @@ from .llms.bedrock.common_utils import (
     AmazonAnthropicClaude3Config,
     AmazonCohereConfig,
     AmazonLlamaConfig,
-    AmazonStabilityConfig,
     AmazonMistralConfig,
     AmazonBedrockGlobalConfig,
 )
+from .llms.bedrock.image.amazon_stability1_transformation import AmazonStabilityConfig
+from .llms.bedrock.image.amazon_stability3_transformation import AmazonStability3Config
 from .llms.bedrock.embed.amazon_titan_g1_transformation import AmazonTitanG1Config
 from .llms.bedrock.embed.amazon_titan_multimodal_transformation import (
     AmazonTitanMultimodalEmbeddingG1Config,
@@ -1019,6 +1036,7 @@ from .llms.fireworks_ai.embed.fireworks_ai_transformation import (
     FireworksAIEmbeddingConfig,
 )
 from .llms.jina_ai.embedding.transformation import JinaAIEmbeddingConfig
+from .llms.xai.chat.xai_transformation import XAIChatConfig
 from .llms.volcengine import VolcEngineConfig
 from .llms.text_completion_codestral import MistralTextCompletionConfig
 from .llms.AzureOpenAI.azure import (
@@ -1028,9 +1046,12 @@ from .llms.AzureOpenAI.azure import (
 
 from .llms.AzureOpenAI.chat.gpt_transformation import AzureOpenAIConfig
 from .llms.hosted_vllm.chat.transformation import HostedVLLMChatConfig
+from .llms.deepseek.chat.transformation import DeepSeekChatConfig
+from .llms.lm_studio.chat.transformation import LMStudioChatConfig
 from .llms.perplexity.chat.transformation import PerplexityChatConfig
 from .llms.AzureOpenAI.chat.o1_transformation import AzureOpenAIO1Config
-from .llms.watsonx import IBMWatsonXAIConfig
+from .llms.watsonx.completion.handler import IBMWatsonXAIConfig
+from .llms.watsonx.chat.transformation import IBMWatsonXChatConfig
 from .main import *  # type: ignore
 from .integrations import *
 from .exceptions import (

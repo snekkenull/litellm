@@ -745,12 +745,12 @@ class StreamingChatCompletionChunk(OpenAIChatCompletionChunk):
         super().__init__(**kwargs)
 
 
-class ModelResponse(OpenAIObject):
+from openai.types.chat import ChatCompletionChunk
+
+
+class ModelResponseBase(OpenAIObject):
     id: str
     """A unique identifier for the completion."""
-
-    choices: List[Union[Choices, StreamingChoices]]
-    """The list of completion choices the model generated for the input prompt."""
 
     created: int
     """The Unix timestamp (in seconds) of when the completion was created."""
@@ -771,6 +771,55 @@ class ModelResponse(OpenAIObject):
     _hidden_params: dict = {}
 
     _response_headers: Optional[dict] = None
+
+
+class ModelResponseStream(ModelResponseBase):
+    choices: List[StreamingChoices]
+
+    def __init__(
+        self,
+        choices: Optional[List[Union[StreamingChoices, dict, BaseModel]]] = None,
+        **kwargs,
+    ):
+        if choices is not None and isinstance(choices, list):
+            new_choices = []
+            for choice in choices:
+                _new_choice = None
+                if isinstance(choice, StreamingChoices):
+                    _new_choice = choice
+                elif isinstance(choice, dict):
+                    _new_choice = StreamingChoices(**choice)
+                elif isinstance(choice, BaseModel):
+                    _new_choice = StreamingChoices(**choice.model_dump())
+                new_choices.append(_new_choice)
+            kwargs["choices"] = new_choices
+        else:
+            kwargs["choices"] = [StreamingChoices()]
+        super().__init__(**kwargs)
+
+    def __contains__(self, key):
+        # Define custom behavior for the 'in' operator
+        return hasattr(self, key)
+
+    def get(self, key, default=None):
+        # Custom .get() method to access attributes with a default value if the attribute doesn't exist
+        return getattr(self, key, default)
+
+    def __getitem__(self, key):
+        # Allow dictionary-style access to attributes
+        return getattr(self, key)
+
+    def json(self, **kwargs):  # type: ignore
+        try:
+            return self.model_dump()  # noqa
+        except Exception:
+            # if using pydantic v1
+            return self.dict()
+
+
+class ModelResponse(ModelResponseBase):
+    choices: List[Union[Choices, StreamingChoices]]
+    """The list of completion choices the model generated for the input prompt."""
 
     def __init__(
         self,
@@ -1145,7 +1194,7 @@ class ImageObject(OpenAIImage):
     url: Optional[str] = None
     revised_prompt: Optional[str] = None
 
-    def __init__(self, b64_json=None, url=None, revised_prompt=None):
+    def __init__(self, b64_json=None, url=None, revised_prompt=None, **kwargs):
         super().__init__(b64_json=b64_json, url=url, revised_prompt=revised_prompt)  # type: ignore
 
     def __contains__(self, key):
@@ -1292,6 +1341,7 @@ all_litellm_params = [
     "metadata",
     "tags",
     "acompletion",
+    "aimg_generation",
     "atext_completion",
     "text_completion",
     "caching",
@@ -1314,6 +1364,7 @@ all_litellm_params = [
     "num_retries",
     "context_window_fallback_dict",
     "retry_policy",
+    "retry_strategy",
     "roles",
     "final_prompt_value",
     "bos_token",
@@ -1357,6 +1408,8 @@ all_litellm_params = [
     "ensure_alternating_roles",
     "assistant_continue_message",
     "user_continue_message",
+    "fallback_depth",
+    "max_fallbacks",
 ]
 
 
@@ -1433,12 +1486,19 @@ class StandardLoggingMetadata(StandardLoggingUserAPIKeyMetadata):
     requester_metadata: Optional[dict]
 
 
+class StandardLoggingAdditionalHeaders(TypedDict, total=False):
+    x_ratelimit_limit_requests: int
+    x_ratelimit_limit_tokens: int
+    x_ratelimit_remaining_requests: int
+    x_ratelimit_remaining_tokens: int
+
+
 class StandardLoggingHiddenParams(TypedDict):
     model_id: Optional[str]
     cache_key: Optional[str]
     api_base: Optional[str]
     response_cost: Optional[str]
-    additional_headers: Optional[dict]
+    additional_headers: Optional[StandardLoggingAdditionalHeaders]
 
 
 class StandardLoggingModelInformation(TypedDict):

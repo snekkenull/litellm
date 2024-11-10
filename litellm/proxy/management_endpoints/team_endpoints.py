@@ -1275,11 +1275,26 @@ async def list_team(
         for tm in returned_tm:
             if tm.team_id == team.team_id:
                 _team_memberships.append(tm)
-        returned_responses.append(
-            TeamListResponseObject(
-                **team.model_dump(),
-                team_memberships=_team_memberships,
-            )
+
+        # add all keys that belong to the team
+        keys = await prisma_client.db.litellm_verificationtoken.find_many(
+            where={"team_id": team.team_id}
         )
+
+        try:
+            returned_responses.append(
+                TeamListResponseObject(
+                    **team.model_dump(),
+                    team_memberships=_team_memberships,
+                    keys=keys,
+                )
+            )
+        except Exception as e:
+            team_exception = """Invalid team object for team_id: {}. team_object={}.
+            Error: {}
+            """.format(
+                team.team_id, team.model_dump(), str(e)
+            )
+            raise HTTPException(status_code=400, detail={"error": team_exception})
 
     return returned_responses
