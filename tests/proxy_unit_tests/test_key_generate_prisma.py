@@ -76,8 +76,10 @@ from litellm.proxy.proxy_server import (
     image_generation,
     model_list,
     moderations,
-    new_end_user,
     user_api_key_auth,
+)
+from litellm.proxy.management_endpoints.customer_endpoints import (
+    new_end_user,
 )
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     global_spend,
@@ -456,7 +458,10 @@ async def test_call_with_valid_model_using_all_models(prisma_client):
         print("result from user auth with new key", result)
 
         # call /key/info for key - models == "all-proxy-models"
-        key_info = await info_key_fn(key=generated_key)
+        key_info = await info_key_fn(
+            key=generated_key,
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        )
         print("key_info", key_info)
         models = key_info["info"]["models"]
         assert models == ["all-team-models"]
@@ -1179,7 +1184,12 @@ def test_generate_and_call_key_info(prisma_client):
             generated_key = key.key
 
             # use generated key to auth in
-            result = await info_key_fn(key=generated_key)
+            result = await info_key_fn(
+                key=generated_key,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                ),
+            )
             print("result from info_key_fn", result)
             assert result["key"] == generated_key
             print("\n info for key=", result["info"])
@@ -1271,7 +1281,12 @@ def test_generate_and_update_key(prisma_client):
             generated_key = key.key
 
             # use generated key to auth in
-            result = await info_key_fn(key=generated_key)
+            result = await info_key_fn(
+                key=generated_key,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                ),
+            )
             print("result from info_key_fn", result)
             assert result["key"] == generated_key
             print("\n info for key=", result["info"])
@@ -1303,7 +1318,12 @@ def test_generate_and_update_key(prisma_client):
             print("response2=", response2)
 
             # get info on key after update
-            result = await info_key_fn(key=generated_key)
+            result = await info_key_fn(
+                key=generated_key,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                ),
+            )
             print("result from info_key_fn", result)
             assert result["key"] == generated_key
             print("\n info for key=", result["info"])
@@ -1989,7 +2009,10 @@ async def test_key_name_null(prisma_client):
         key = await generate_key_fn(request)
         print("generated key=", key)
         generated_key = key.key
-        result = await info_key_fn(key=generated_key)
+        result = await info_key_fn(
+            key=generated_key,
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        )
         print("result from info_key_fn", result)
         assert result["info"]["key_name"] is None
     except Exception as e:
@@ -2014,7 +2037,10 @@ async def test_key_name_set(prisma_client):
         request = GenerateKeyRequest()
         key = await generate_key_fn(request)
         generated_key = key.key
-        result = await info_key_fn(key=generated_key)
+        result = await info_key_fn(
+            key=generated_key,
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        )
         print("result from info_key_fn", result)
         assert isinstance(result["info"]["key_name"], str)
     except Exception as e:
@@ -2038,7 +2064,10 @@ async def test_default_key_params(prisma_client):
         request = GenerateKeyRequest()
         key = await generate_key_fn(request)
         generated_key = key.key
-        result = await info_key_fn(key=generated_key)
+        result = await info_key_fn(
+            key=generated_key,
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        )
         print("result from info_key_fn", result)
         assert result["info"]["max_budget"] == 0.000122
     except Exception as e:
@@ -2804,7 +2833,10 @@ async def test_generate_key_with_model_tpm_limit(prisma_client):
     generated_key = key.key
 
     # use generated key to auth in
-    result = await info_key_fn(key=generated_key)
+    result = await info_key_fn(
+        key=generated_key,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
     print("result from info_key_fn", result)
     assert result["key"] == generated_key
     print("\n info for key=", result["info"])
@@ -2825,7 +2857,10 @@ async def test_generate_key_with_model_tpm_limit(prisma_client):
     _request._url = URL(url="/update/key")
 
     await update_key_fn(data=request, request=_request)
-    result = await info_key_fn(key=generated_key)
+    result = await info_key_fn(
+        key=generated_key,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
     print("result from info_key_fn", result)
     assert result["key"] == generated_key
     print("\n info for key=", result["info"])
@@ -2863,7 +2898,10 @@ async def test_generate_key_with_guardrails(prisma_client):
     generated_key = key.key
 
     # use generated key to auth in
-    result = await info_key_fn(key=generated_key)
+    result = await info_key_fn(
+        key=generated_key,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
     print("result from info_key_fn", result)
     assert result["key"] == generated_key
     print("\n info for key=", result["info"])
@@ -2882,7 +2920,10 @@ async def test_generate_key_with_guardrails(prisma_client):
     _request._url = URL(url="/update/key")
 
     await update_key_fn(data=request, request=_request)
-    result = await info_key_fn(key=generated_key)
+    result = await info_key_fn(
+        key=generated_key,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
     print("result from info_key_fn", result)
     assert result["key"] == generated_key
     print("\n info for key=", result["info"])
@@ -3412,3 +3453,100 @@ async def test_user_api_key_auth_db_unavailable_not_allowed():
             request=request,
             api_key="Bearer sk-123456789",
         )
+
+
+## E2E Virtual Key + Secret Manager Tests #########################################
+
+
+@pytest.mark.asyncio
+async def test_key_generate_with_secret_manager_call(prisma_client):
+    """
+    Generate a key
+    assert it exists in the secret manager
+
+    delete the key
+    assert it is deleted from the secret manager
+    """
+    from litellm.secret_managers.aws_secret_manager_v2 import AWSSecretsManagerV2
+    from litellm.proxy._types import KeyManagementSystem, KeyManagementSettings
+
+    from litellm.proxy.hooks.key_management_event_hooks import (
+        LITELLM_PREFIX_STORED_VIRTUAL_KEYS,
+    )
+
+    litellm.set_verbose = True
+
+    #### Test Setup ############################################################
+    aws_secret_manager_client = AWSSecretsManagerV2()
+    litellm.secret_manager_client = aws_secret_manager_client
+    litellm._key_management_system = KeyManagementSystem.AWS_SECRET_MANAGER
+    litellm._key_management_settings = KeyManagementSettings(
+        store_virtual_keys=True,
+    )
+    general_settings = {
+        "key_management_system": "aws_secret_manager",
+        "key_management_settings": {
+            "store_virtual_keys": True,
+        },
+    }
+
+    setattr(litellm.proxy.proxy_server, "general_settings", general_settings)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    await litellm.proxy.proxy_server.prisma_client.connect()
+    ############################################################################
+
+    # generate new key
+    key_alias = f"test_alias_secret_manager_key-{uuid.uuid4()}"
+    spend = 100
+    max_budget = 400
+    models = ["fake-openai-endpoint"]
+    new_key = await generate_key_fn(
+        data=GenerateKeyRequest(
+            key_alias=key_alias, spend=spend, max_budget=max_budget, models=models
+        ),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+
+    generated_key = new_key.key
+    print(generated_key)
+
+    await asyncio.sleep(2)
+
+    # read from the secret manager
+
+    result = await aws_secret_manager_client.async_read_secret(
+        secret_name=f"{litellm._key_management_settings.prefix_for_stored_virtual_keys}/{key_alias}"
+    )
+
+    # Assert the correct key is stored in the secret manager
+    print("response from AWS Secret Manager")
+    print(result)
+    assert result == generated_key
+
+    # delete the key
+    await delete_key_fn(
+        data=KeyRequest(keys=[generated_key]),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN, api_key="sk-1234", user_id="1234"
+        ),
+    )
+
+    await asyncio.sleep(2)
+
+    # Assert the key is deleted from the secret manager
+
+    result = await aws_secret_manager_client.async_read_secret(
+        secret_name=f"{litellm._key_management_settings.prefix_for_stored_virtual_keys}/{key_alias}"
+    )
+    assert result is None
+
+    # cleanup
+    setattr(litellm.proxy.proxy_server, "general_settings", {})
+
+
+################################################################################

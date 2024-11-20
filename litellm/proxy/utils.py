@@ -26,6 +26,8 @@ from typing import (
     overload,
 )
 
+from litellm.proxy._types import ProxyErrorTypes, ProxyException
+
 try:
     import backoff
 except ImportError:
@@ -175,7 +177,7 @@ class InternalUsageCache:
         local_only: bool = False,
         **kwargs,
     ) -> None:
-        return await self.dual_cache.async_batch_set_cache(
+        return await self.dual_cache.async_set_cache_pipeline(
             cache_list=cache_list,
             local_only=local_only,
             litellm_parent_otel_span=litellm_parent_otel_span,
@@ -1424,9 +1426,7 @@ class PrismaClient:
                 # check if plain text or hash
                 if token is not None:
                     if isinstance(token, str):
-                        hashed_token = token
-                        if token.startswith("sk-"):
-                            hashed_token = self.hash_token(token=token)
+                        hashed_token = _hash_token_if_needed(token=token)
                         verbose_proxy_logger.debug(
                             f"PrismaClient: find_unique for token: {hashed_token}"
                         )
@@ -1493,8 +1493,7 @@ class PrismaClient:
                     if token is not None:
                         where_filter["token"] = {}
                         if isinstance(token, str):
-                            if token.startswith("sk-"):
-                                token = self.hash_token(token=token)
+                            token = _hash_token_if_needed(token=token)
                             where_filter["token"]["in"] = [token]
                         elif isinstance(token, list):
                             hashed_tokens = []
@@ -1630,9 +1629,7 @@ class PrismaClient:
                 # check if plain text or hash
                 if token is not None:
                     if isinstance(token, str):
-                        hashed_token = token
-                        if token.startswith("sk-"):
-                            hashed_token = self.hash_token(token=token)
+                        hashed_token = _hash_token_if_needed(token=token)
                         verbose_proxy_logger.debug(
                             f"PrismaClient: find_unique for token: {hashed_token}"
                         )
@@ -1912,8 +1909,7 @@ class PrismaClient:
             if token is not None:
                 print_verbose(f"token: {token}")
                 # check if plain text or hash
-                if token.startswith("sk-"):
-                    token = self.hash_token(token=token)
+                token = _hash_token_if_needed(token=token)
                 db_data["token"] = token
                 response = await self.db.litellm_verificationtoken.update(
                     where={"token": token},  # type: ignore
@@ -2422,6 +2418,18 @@ def hash_token(token: str):
     hashed_token = hashlib.sha256(token.encode()).hexdigest()
 
     return hashed_token
+
+
+def _hash_token_if_needed(token: str) -> str:
+    """
+    Hash the token if it's a string and starts with "sk-"
+
+    Else return the token as is
+    """
+    if token.startswith("sk-"):
+        return hash_token(token=token)
+    else:
+        return token
 
 
 def _extract_from_regex(duration: str) -> Tuple[int, str]:
@@ -3089,3 +3097,55 @@ def get_error_message_str(e: Exception) -> str:
     else:
         error_message = str(e)
     return error_message
+
+
+def _get_redoc_url() -> str:
+    """
+    Get the redoc URL from the environment variables.
+
+    - If REDOC_URL is set, return it.
+    - Otherwise, default to "/redoc".
+    """
+    return os.getenv("REDOC_URL", "/redoc")
+
+
+def _get_docs_url() -> Optional[str]:
+    """
+    Get the docs URL from the environment variables.
+
+    - If DOCS_URL is set, return it.
+    - If NO_DOCS is True, return None.
+    - Otherwise, default to "/".
+    """
+    docs_url = os.getenv("DOCS_URL", None)
+    if docs_url:
+        return docs_url
+
+    if os.getenv("NO_DOCS", "False") == "True":
+        return None
+
+    # default to "/"
+    return "/"
+
+def handle_exception_on_proxy(e: Exception) -> ProxyException:
+    """
+    Returns an Exception as ProxyException, this ensures all exceptions are OpenAI API compatible
+    """
+    from fastapi import status
+
+    if isinstance(e, HTTPException):
+        return ProxyException(
+            message=getattr(e, "detail", f"error({str(e)})"),
+            type=ProxyErrorTypes.internal_server_error,
+            param=getattr(e, "param", "None"),
+            code=getattr(e, "status_code", status.HTTP_500_INTERNAL_SERVER_ERROR),
+        )
+    elif isinstance(e, ProxyException):
+        return e
+    return ProxyException(
+        message="Internal Server Error, " + str(e),
+        type=ProxyErrorTypes.internal_server_error,
+        param=getattr(e, "param", "None"),
+        code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+

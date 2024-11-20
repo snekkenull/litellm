@@ -748,7 +748,7 @@ def test_convert_model_response_object():
         ("vertex_ai/gemini-1.5-pro", True),
         ("gemini/gemini-1.5-pro", True),
         ("predibase/llama3-8b-instruct", True),
-        ("gpt-4o", False),
+        ("gpt-3.5-turbo", False),
     ],
 )
 def test_supports_response_schema(model, expected_bool):
@@ -855,6 +855,7 @@ def test_async_http_handler(mock_async_client):
 
     mock_async_client.assert_called_with(
         cert="/client.pem",
+        transport=None,
         event_hooks=event_hooks,
         headers=headers,
         limits=httpx.Limits(
@@ -864,6 +865,52 @@ def test_async_http_handler(mock_async_client):
         timeout=timeout,
         verify="/certificate.pem",
     )
+
+
+@mock.patch("httpx.AsyncClient")
+@mock.patch.dict(os.environ, {}, clear=True)
+def test_async_http_handler_force_ipv4(mock_async_client):
+    """
+    Test AsyncHTTPHandler when litellm.force_ipv4 is True
+
+    This is prod test - we need to ensure that httpx always uses ipv4 when litellm.force_ipv4 is True
+    """
+    import httpx
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+
+    # Set force_ipv4 to True
+    litellm.force_ipv4 = True
+
+    try:
+        timeout = 120
+        event_hooks = {"request": [lambda r: r]}
+        concurrent_limit = 2
+
+        AsyncHTTPHandler(timeout, event_hooks, concurrent_limit)
+
+        # Get the call arguments
+        call_args = mock_async_client.call_args[1]
+
+        ############# IMPORTANT ASSERTION #################
+        # Assert transport exists and is configured correctly for using ipv4
+        assert isinstance(call_args["transport"], httpx.AsyncHTTPTransport)
+        print(call_args["transport"])
+        assert call_args["transport"]._pool._local_address == "0.0.0.0"
+        ####################################
+
+        # Assert other parameters match
+        assert call_args["event_hooks"] == event_hooks
+        assert call_args["headers"] == headers
+        assert isinstance(call_args["limits"], httpx.Limits)
+        assert call_args["limits"].max_connections == concurrent_limit
+        assert call_args["limits"].max_keepalive_connections == concurrent_limit
+        assert call_args["timeout"] == timeout
+        assert call_args["verify"] is True
+        assert call_args["cert"] is None
+
+    finally:
+        # Reset force_ipv4 to default
+        litellm.force_ipv4 = False
 
 
 @pytest.mark.parametrize(
@@ -943,3 +990,24 @@ def test_validate_chat_completion_user_messages(messages, expected_bool):
         ## Invalid message
         with pytest.raises(Exception):
             validate_chat_completion_user_messages(messages=messages)
+
+
+def test_models_by_provider():
+    """
+    Make sure all providers from model map are in the valid providers list
+    """
+    from litellm import models_by_provider
+
+    providers = set()
+    for k, v in litellm.model_cost.items():
+        if "_" in v["litellm_provider"] and "-" in v["litellm_provider"]:
+            continue
+        elif k == "sample_spec":
+            continue
+        elif v["litellm_provider"] == "sagemaker":
+            continue
+        else:
+            providers.add(v["litellm_provider"])
+
+    for provider in providers:
+        assert provider in models_by_provider.keys()

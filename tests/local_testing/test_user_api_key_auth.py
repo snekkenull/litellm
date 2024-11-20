@@ -305,14 +305,14 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
     [
         # Proxy Admin checks
         ("/global/spend/logs", "proxy_admin", True),
-        ("/key/delete", "proxy_admin", True),
-        ("/key/generate", "proxy_admin", True),
-        ("/key/regenerate", "proxy_admin", True),
+        ("/key/delete", "proxy_admin", False),
+        ("/key/generate", "proxy_admin", False),
+        ("/key/regenerate", "proxy_admin", False),
         # Internal User checks - allowed routes
         ("/global/spend/logs", "internal_user", True),
-        ("/key/delete", "internal_user", True),
-        ("/key/generate", "internal_user", True),
-        ("/key/82akk800000000jjsk/regenerate", "internal_user", True),
+        ("/key/delete", "internal_user", False),
+        ("/key/generate", "internal_user", False),
+        ("/key/82akk800000000jjsk/regenerate", "internal_user", False),
         # Internal User Viewer
         ("/key/generate", "internal_user_viewer", False),
         # Internal User checks - disallowed routes
@@ -320,7 +320,7 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
     ],
 )
 def test_is_ui_route_allowed(route, user_role, expected_result):
-    from litellm.proxy.auth.user_api_key_auth import _is_ui_route_allowed
+    from litellm.proxy.auth.user_api_key_auth import _is_ui_route
     from litellm.proxy._types import LiteLLM_UserTable
 
     user_obj = LiteLLM_UserTable(
@@ -342,7 +342,7 @@ def test_is_ui_route_allowed(route, user_role, expected_result):
         "user_obj": user_obj,
     }
     try:
-        assert _is_ui_route_allowed(**received_args) == expected_result
+        assert _is_ui_route(**received_args) == expected_result
     except Exception as e:
         # If expected result is False, we expect an error
         if expected_result is False:
@@ -387,3 +387,31 @@ def test_is_api_route_allowed(route, user_role, expected_result):
             pass
         else:
             raise e
+
+
+from litellm.proxy._types import LitellmUserRoles
+
+
+@pytest.mark.parametrize(
+    "user_role, auth_user_id, requested_user_id, expected_result",
+    [
+        (LitellmUserRoles.PROXY_ADMIN, "1234", None, True),
+        (LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY, None, "1234", True),
+        (LitellmUserRoles.TEAM, "1234", None, False),
+        (LitellmUserRoles.TEAM, None, None, False),
+        (LitellmUserRoles.TEAM, "1234", "1234", True),
+    ],
+)
+def test_allowed_route_inside_route(
+    user_role, auth_user_id, requested_user_id, expected_result
+):
+    from litellm.proxy.auth.auth_checks import allowed_route_check_inside_route
+    from litellm.proxy._types import UserAPIKeyAuth, LitellmUserRoles
+
+    assert (
+        allowed_route_check_inside_route(
+            user_api_key_dict=UserAPIKeyAuth(user_role=user_role, user_id=auth_user_id),
+            requested_user_id=requested_user_id,
+        )
+        == expected_result
+    )

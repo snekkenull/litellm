@@ -59,6 +59,7 @@ from litellm.router_strategy.lowest_cost import LowestCostLoggingHandler
 from litellm.router_strategy.lowest_latency import LowestLatencyLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2
+from litellm.router_strategy.provider_budgets import ProviderBudgetLimiting
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.tag_based_routing import get_deployments_for_tag
 from litellm.router_utils.batch_utils import (
@@ -119,6 +120,7 @@ from litellm.types.router import (
     LiteLLMParamsTypedDict,
     ModelGroupInfo,
     ModelInfo,
+    ProviderBudgetConfigType,
     RetryPolicy,
     RouterErrors,
     RouterGeneralSettings,
@@ -235,7 +237,8 @@ class Router:
             "cost-based-routing",
             "usage-based-routing-v2",
         ] = "simple-shuffle",
-        routing_strategy_args: dict = {},  # just for latency-based routing
+        routing_strategy_args: dict = {},  # just for latency-based
+        provider_budget_config: Optional[ProviderBudgetConfigType] = None,
         semaphore: Optional[asyncio.Semaphore] = None,
         alerting_config: Optional[AlertingConfig] = None,
         router_general_settings: Optional[
@@ -272,6 +275,7 @@ class Router:
             routing_strategy (Literal["simple-shuffle", "least-busy", "usage-based-routing", "latency-based-routing", "cost-based-routing"]): Routing strategy. Defaults to "simple-shuffle".
             routing_strategy_args (dict): Additional args for latency-based routing. Defaults to {}.
             alerting_config (AlertingConfig): Slack alerting configuration. Defaults to None.
+            provider_budget_config (ProviderBudgetConfig): Provider budget configuration. Use this to set llm_provider budget limits. example $100/day to OpenAI, $100/day to Azure, etc. Defaults to None.
         Returns:
             Router: An instance of the litellm.Router class.
 
@@ -339,11 +343,7 @@ class Router:
         cache_config: Dict[str, Any] = {}
 
         self.client_ttl = client_ttl
-        if redis_url is not None or (
-            redis_host is not None
-            and redis_port is not None
-            and redis_password is not None
-        ):
+        if redis_url is not None or (redis_host is not None and redis_port is not None):
             cache_type = "redis"
 
             if redis_url is not None:
@@ -521,6 +521,12 @@ class Router:
         )
         self.service_logger_obj = ServiceLogging()
         self.routing_strategy_args = routing_strategy_args
+        self.provider_budget_config = provider_budget_config
+        if self.provider_budget_config is not None:
+            self.provider_budget_logger = ProviderBudgetLimiting(
+                router_cache=self.cache,
+                provider_budget_config=self.provider_budget_config,
+            )
         self.retry_policy: Optional[RetryPolicy] = None
         if retry_policy is not None:
             if isinstance(retry_policy, dict):
@@ -683,9 +689,8 @@ class Router:
             kwargs["model"] = model
             kwargs["messages"] = messages
             kwargs["original_function"] = self._completion
-            kwargs.get("request_timeout", self.timeout)
-            kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
-            kwargs.setdefault("metadata", {}).update({"model_group": model})
+            self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
+
             response = self.function_with_fallbacks(**kwargs)
             return response
         except Exception as e:
@@ -787,8 +792,7 @@ class Router:
             kwargs["stream"] = stream
             kwargs["original_function"] = self._acompletion
             kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
-
-            kwargs.setdefault("metadata", {}).update({"model_group": model})
+            self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
 
             request_priority = kwargs.get("priority") or self.default_priority
 
@@ -951,6 +955,17 @@ class Router:
             if model_name is not None:
                 self.fail_calls[model_name] += 1
             raise e
+
+    def _update_kwargs_before_fallbacks(self, model: str, kwargs: dict) -> None:
+        """
+        Adds/updates to kwargs:
+        - num_retries
+        - litellm_trace_id
+        - metadata
+        """
+        kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
+        kwargs.setdefault("litellm_trace_id", str(uuid.uuid4()))
+        kwargs.setdefault("metadata", {}).update({"model_group": model})
 
     def _update_kwargs_with_default_litellm_params(self, kwargs: dict) -> None:
         """
@@ -1515,9 +1530,7 @@ class Router:
             kwargs["model"] = model
             kwargs["file"] = file
             kwargs["original_function"] = self._atranscription
-            kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
-            kwargs.get("request_timeout", self.timeout)
-            kwargs.setdefault("metadata", {}).update({"model_group": model})
+            self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
             response = await self.async_function_with_fallbacks(**kwargs)
 
             return response
@@ -1692,9 +1705,7 @@ class Router:
             kwargs["model"] = model
             kwargs["input"] = input
             kwargs["original_function"] = self._arerank
-            kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
-            kwargs.get("request_timeout", self.timeout)
-            kwargs.setdefault("metadata", {}).update({"model_group": model})
+            self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
 
             response = await self.async_function_with_fallbacks(**kwargs)
 
@@ -1843,9 +1854,7 @@ class Router:
             kwargs["model"] = model
             kwargs["prompt"] = prompt
             kwargs["original_function"] = self._atext_completion
-            kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
-            kwargs.get("request_timeout", self.timeout)
-            kwargs.setdefault("metadata", {}).update({"model_group": model})
+            self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
             response = await self.async_function_with_fallbacks(**kwargs)
 
             return response
@@ -2116,9 +2125,7 @@ class Router:
             kwargs["model"] = model
             kwargs["input"] = input
             kwargs["original_function"] = self._aembedding
-            kwargs["num_retries"] = kwargs.get("num_retries", self.num_retries)
-            kwargs.get("request_timeout", self.timeout)
-            kwargs.setdefault("metadata", {}).update({"model_group": model})
+            self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
             response = await self.async_function_with_fallbacks(**kwargs)
             return response
         except Exception as e:
@@ -2613,6 +2620,7 @@ class Router:
         If it fails after num_retries, fall back to another model group
         """
         model_group: Optional[str] = kwargs.get("model")
+        disable_fallbacks: Optional[bool] = kwargs.pop("disable_fallbacks", False)
         fallbacks: Optional[List] = kwargs.get("fallbacks", self.fallbacks)
         context_window_fallbacks: Optional[List] = kwargs.get(
             "context_window_fallbacks", self.context_window_fallbacks
@@ -2620,6 +2628,7 @@ class Router:
         content_policy_fallbacks: Optional[List] = kwargs.get(
             "content_policy_fallbacks", self.content_policy_fallbacks
         )
+
         try:
             self._handle_mock_testing_fallbacks(
                 kwargs=kwargs,
@@ -2639,7 +2648,7 @@ class Router:
             original_model_group: Optional[str] = kwargs.get("model")  # type: ignore
             fallback_failure_exception_str = ""
 
-            if original_model_group is None:
+            if disable_fallbacks is True or original_model_group is None:
                 raise e
 
             input_kwargs = {
@@ -5109,6 +5118,14 @@ class Router:
                 request_kwargs=request_kwargs,
                 healthy_deployments=healthy_deployments,
             )
+
+            if self.provider_budget_config is not None:
+                healthy_deployments = (
+                    await self.provider_budget_logger.async_filter_deployments(
+                        healthy_deployments=healthy_deployments,
+                        request_kwargs=request_kwargs,
+                    )
+                )
 
             if len(healthy_deployments) == 0:
                 exception = await async_raise_no_deployment_exception(

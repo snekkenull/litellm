@@ -57,6 +57,7 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "gcs_bucket",
     "opik",
     "argilla",
+    "mlflow",
 ]
 logged_real_time_event_types: Optional[Union[List[str], Literal["*"]]] = None
 _known_custom_logger_compatible_callbacks: List = list(
@@ -283,11 +284,18 @@ max_end_user_budget: Optional[float] = None
 priority_reservation: Optional[Dict[str, float]] = None
 #### RELIABILITY ####
 REPEATED_STREAMING_CHUNK_LIMIT = 100  # catch if model starts looping the same chunk while streaming. Uses high default to prevent false positives.
+
+#### Networking settings ####
 request_timeout: float = 6000  # time in seconds
+force_ipv4: bool = (
+    False  # when True, litellm will force ipv4 for all LLM requests. Some users have seen httpx ConnectionError when using ipv6.
+)
 module_level_aclient = AsyncHTTPHandler(
     timeout=request_timeout, client_alias="module level aclient"
 )
 module_level_client = HTTPHandler(timeout=request_timeout)
+
+#### RETRIES ####
 num_retries: Optional[int] = None  # per model endpoint
 max_fallbacks: Optional[int] = None
 default_fallbacks: Optional[List] = None
@@ -304,7 +312,7 @@ secret_manager_client: Optional[Any] = (
 )
 _google_kms_resource_name: Optional[str] = None
 _key_management_system: Optional[KeyManagementSystem] = None
-_key_management_settings: Optional[KeyManagementSettings] = None
+_key_management_settings: KeyManagementSettings = KeyManagementSettings()
 #### PII MASKING ####
 output_parse_pii: bool = False
 #############################################
@@ -375,6 +383,7 @@ open_ai_text_completion_models: List = []
 cohere_models: List = []
 cohere_chat_models: List = []
 mistral_chat_models: List = []
+text_completion_codestral_models: List = []
 anthropic_models: List = []
 empower_models: List = []
 openrouter_models: List = []
@@ -401,6 +410,19 @@ deepinfra_models: List = []
 perplexity_models: List = []
 watsonx_models: List = []
 gemini_models: List = []
+xai_models: List = []
+deepseek_models: List = []
+azure_ai_models: List = []
+voyage_models: List = []
+databricks_models: List = []
+cloudflare_models: List = []
+codestral_models: List = []
+friendliai_models: List = []
+palm_models: List = []
+groq_models: List = []
+azure_models: List = []
+anyscale_models: List = []
+cerebras_models: List = []
 
 
 def add_known_models():
@@ -477,6 +499,34 @@ def add_known_models():
             # ignore the 'up-to', '-to-' model names -> not real models. just for cost tracking based on model params.
             if "-to-" not in key:
                 fireworks_ai_embedding_models.append(key)
+        elif value.get("litellm_provider") == "text-completion-codestral":
+            text_completion_codestral_models.append(key)
+        elif value.get("litellm_provider") == "xai":
+            xai_models.append(key)
+        elif value.get("litellm_provider") == "deepseek":
+            deepseek_models.append(key)
+        elif value.get("litellm_provider") == "azure_ai":
+            azure_ai_models.append(key)
+        elif value.get("litellm_provider") == "voyage":
+            voyage_models.append(key)
+        elif value.get("litellm_provider") == "databricks":
+            databricks_models.append(key)
+        elif value.get("litellm_provider") == "cloudflare":
+            cloudflare_models.append(key)
+        elif value.get("litellm_provider") == "codestral":
+            codestral_models.append(key)
+        elif value.get("litellm_provider") == "friendliai":
+            friendliai_models.append(key)
+        elif value.get("litellm_provider") == "palm":
+            palm_models.append(key)
+        elif value.get("litellm_provider") == "groq":
+            groq_models.append(key)
+        elif value.get("litellm_provider") == "azure":
+            azure_models.append(key)
+        elif value.get("litellm_provider") == "anyscale":
+            anyscale_models.append(key)
+        elif value.get("litellm_provider") == "cerebras":
+            cerebras_models.append(key)
 
 
 add_known_models()
@@ -722,6 +772,20 @@ model_list = (
     + vertex_language_models
     + watsonx_models
     + gemini_models
+    + text_completion_codestral_models
+    + xai_models
+    + deepseek_models
+    + azure_ai_models
+    + voyage_models
+    + databricks_models
+    + cloudflare_models
+    + codestral_models
+    + friendliai_models
+    + palm_models
+    + groq_models
+    + azure_models
+    + anyscale_models
+    + cerebras_models
 )
 
 
@@ -778,6 +842,7 @@ class LlmProviders(str, Enum):
     FIREWORKS_AI = "fireworks_ai"
     FRIENDLIAI = "friendliai"
     WATSONX = "watsonx"
+    WATSONX_TEXT = "watsonx_text"
     TRITON = "triton"
     PREDIBASE = "predibase"
     DATABRICKS = "databricks"
@@ -794,6 +859,7 @@ provider_list: List[Union[LlmProviders, str]] = list(LlmProviders)
 
 models_by_provider: dict = {
     "openai": open_ai_chat_completion_models + open_ai_text_completion_models,
+    "text-completion-openai": open_ai_text_completion_models,
     "cohere": cohere_models + cohere_chat_models,
     "cohere_chat": cohere_chat_models,
     "anthropic": anthropic_models,
@@ -817,6 +883,23 @@ models_by_provider: dict = {
     "watsonx": watsonx_models,
     "gemini": gemini_models,
     "fireworks_ai": fireworks_ai_models + fireworks_ai_embedding_models,
+    "aleph_alpha": aleph_alpha_models,
+    "text-completion-codestral": text_completion_codestral_models,
+    "xai": xai_models,
+    "deepseek": deepseek_models,
+    "mistral": mistral_chat_models,
+    "azure_ai": azure_ai_models,
+    "voyage": voyage_models,
+    "databricks": databricks_models,
+    "cloudflare": cloudflare_models,
+    "codestral": codestral_models,
+    "nlp_cloud": nlp_cloud_models,
+    "friendliai": friendliai_models,
+    "palm": palm_models,
+    "groq": groq_models,
+    "azure": azure_models,
+    "anyscale": anyscale_models,
+    "cerebras": cerebras_models,
 }
 
 # mapping for those models which have larger equivalents
@@ -886,10 +969,11 @@ from .utils import (
     supports_response_schema,
     supports_parallel_function_calling,
     supports_vision,
+    supports_audio_input,
+    supports_audio_output,
     supports_system_messages,
     get_litellm_params,
     acreate,
-    get_model_list,
     get_max_tokens,
     get_model_info,
     register_prompt_template,
@@ -1048,6 +1132,7 @@ from .llms.AzureOpenAI.chat.gpt_transformation import AzureOpenAIConfig
 from .llms.hosted_vllm.chat.transformation import HostedVLLMChatConfig
 from .llms.deepseek.chat.transformation import DeepSeekChatConfig
 from .llms.lm_studio.chat.transformation import LMStudioChatConfig
+from .llms.lm_studio.embed.transformation import LmStudioEmbeddingConfig
 from .llms.perplexity.chat.transformation import PerplexityChatConfig
 from .llms.AzureOpenAI.chat.o1_transformation import AzureOpenAIO1Config
 from .llms.watsonx.completion.handler import IBMWatsonXAIConfig
