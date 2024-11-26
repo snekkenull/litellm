@@ -14,6 +14,7 @@ import requests  # type: ignore
 
 import litellm
 from litellm import verbose_logger
+from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.utils import ModelInfo, ProviderField, StreamingChoices
 
@@ -163,6 +164,30 @@ class OllamaConfig:
             "stop",
             "response_format",
         ]
+
+    def map_openai_params(
+        self, optional_params: dict, non_default_params: dict
+    ) -> dict:
+        for param, value in non_default_params.items():
+            if param == "max_tokens":
+                optional_params["num_predict"] = value
+            if param == "stream":
+                optional_params["stream"] = value
+            if param == "temperature":
+                optional_params["temperature"] = value
+            if param == "seed":
+                optional_params["seed"] = value
+            if param == "top_p":
+                optional_params["top_p"] = value
+            if param == "frequency_penalty":
+                optional_params["repeat_penalty"] = value
+            if param == "stop":
+                optional_params["stop"] = value
+            if param == "response_format" and isinstance(value, dict):
+                if value["type"] == "json_object":
+                    optional_params["format"] = "json"
+
+        return optional_params
 
     def _supports_function_calling(self, ollama_model_info: dict) -> bool:
         """
@@ -432,7 +457,10 @@ def ollama_completion_stream(url, data, logging_obj):
 
 async def ollama_async_streaming(url, data, model_response, encoding, logging_obj):
     try:
-        client = httpx.AsyncClient()
+        _async_http_client = get_async_httpx_client(
+            llm_provider=litellm.LlmProviders.OLLAMA
+        )
+        client = _async_http_client.client
         async with client.stream(
             url=f"{url}", json=data, method="POST", timeout=litellm.request_timeout
         ) as response:

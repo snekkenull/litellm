@@ -96,11 +96,10 @@ const sidebars = {
           label: "Spend Tracking + Budgets",
           items: ["proxy/cost_tracking", "proxy/users", "proxy/custom_pricing", "proxy/team_budgets", "proxy/billing", "proxy/customers"],
         },
-        "proxy/reliability",
         {
-          type: "category",
-          label: "Routing",
-          items: ["proxy/load_balancing", "proxy/tag_routing", "proxy/provider_budget_routing", "proxy/team_based_routing", "proxy/customer_routing",],
+          type: "link",
+          label: "Load Balancing, Routing, Fallbacks",
+          href: "https://docs.litellm.ai/docs/routing-load-balancing",
         },
         {
           type: "category",
@@ -202,26 +201,18 @@ const sidebars = {
     {
       type: "category",
       label: "Guides",
-      link: {
-        type: "generated-index",
-        title: "Chat Completions",
-        description: "Details on the completion() function",
-        slug: "/completion",
-      },
       items: [
-        "completion/input",
+        "exception_mapping",
         "completion/provider_specific_params",
-        "completion/json_mode",
-        "completion/prompt_caching",
+        "guides/finetuned_models",
         "completion/audio",
         "completion/vision",
+        "completion/json_mode",
+        "completion/prompt_caching",
         "completion/predict_outputs",
         "completion/prefix",
         "completion/drop_params",
         "completion/prompt_formatting",
-        "completion/output",
-        "completion/usage",
-        "exception_mapping",
         "completion/stream",
         "completion/message_trimming",
         "completion/function_call",
@@ -229,16 +220,38 @@ const sidebars = {
         "completion/batching",
         "completion/mock_requests",
         "completion/reliable_completions",
-      ],
+        
+      ]
     },
     {
       type: "category",
       label: "Supported Endpoints",
       items: [
+        {
+          type: "category",
+          label: "Chat",
+          link: {
+            type: "generated-index",
+            title: "Chat Completions",
+            description: "Details on the completion() function",
+            slug: "/completion",
+          },
+          items: [
+            "completion/input",
+            "completion/output",
+            "completion/usage",
+          ],
+        },
         "embedding/supported_embedding",
         "image_generation",
-        "audio_transcription",
-        "text_to_speech",
+        {
+          type: "category",
+          label: "Audio",
+          "items": [
+            "audio_transcription",
+            "text_to_speech",
+          ]
+        },
         "rerank",
         "assistants",
         "batches",
@@ -253,8 +266,14 @@ const sidebars = {
     },
     {
       type: "category",
-      label: "Load Balancing",
-      items: ["routing", "scheduler"],
+      label: "Routing, Loadbalancing & Fallbacks",
+      link: {
+        type: "generated-index",
+        title: "Routing, Loadbalancing & Fallbacks",
+        description: "Learn how to load balance, route, and set fallbacks for your LLM requests",
+        slug: "/routing-load-balancing",
+      },
+      items: ["routing", "scheduler", "proxy/load_balancing", "proxy/reliability", "proxy/tag_routing", "proxy/provider_budget_routing", "proxy/team_based_routing", "proxy/customer_routing"],
     },
     {
       type: "category",

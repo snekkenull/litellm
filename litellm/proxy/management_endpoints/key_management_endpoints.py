@@ -34,11 +34,150 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.hooks.key_management_event_hooks import KeyManagementEventHooks
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 from litellm.proxy.utils import (
-    _duration_in_seconds,
     _hash_token_if_needed,
+    duration_in_seconds,
     handle_exception_on_proxy,
 )
 from litellm.secret_managers.main import get_secret
+from litellm.types.utils import PersonalUIKeyGenerationConfig, TeamUIKeyGenerationConfig
+
+
+def _is_team_key(data: GenerateKeyRequest):
+    return data.team_id is not None
+
+
+def _team_key_generation_team_member_check(
+    user_api_key_dict: UserAPIKeyAuth,
+    team_key_generation: Optional[TeamUIKeyGenerationConfig],
+):
+    if (
+        team_key_generation is None
+        or "allowed_team_member_roles" not in team_key_generation
+    ):
+        return True
+
+    if user_api_key_dict.team_member is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User not assigned to team. Got team_member={user_api_key_dict.team_member}",
+        )
+
+    team_member_role = user_api_key_dict.team_member.role
+    if team_member_role not in team_key_generation["allowed_team_member_roles"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Team member role {team_member_role} not in allowed_team_member_roles={litellm.key_generation_settings['team_key_generation']['allowed_team_member_roles']}",  # type: ignore
+        )
+    return True
+
+
+def _key_generation_required_param_check(
+    data: GenerateKeyRequest, required_params: Optional[List[str]]
+):
+    if required_params is None:
+        return True
+
+    data_dict = data.model_dump(exclude_unset=True)
+    for param in required_params:
+        if param not in data_dict:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Required param {param} not in data",
+            )
+    return True
+
+
+def _team_key_generation_check(
+    user_api_key_dict: UserAPIKeyAuth, data: GenerateKeyRequest
+):
+    if (
+        litellm.key_generation_settings is None
+        or litellm.key_generation_settings.get("team_key_generation") is None
+    ):
+        return True
+
+    _team_key_generation = litellm.key_generation_settings["team_key_generation"]  # type: ignore
+
+    _team_key_generation_team_member_check(
+        user_api_key_dict,
+        team_key_generation=_team_key_generation,
+    )
+    _key_generation_required_param_check(
+        data,
+        _team_key_generation.get("required_params"),
+    )
+
+    return True
+
+
+def _personal_key_membership_check(
+    user_api_key_dict: UserAPIKeyAuth,
+    personal_key_generation: Optional[PersonalUIKeyGenerationConfig],
+):
+    if (
+        personal_key_generation is None
+        or "allowed_user_roles" not in personal_key_generation
+    ):
+        return True
+
+    if user_api_key_dict.user_role not in personal_key_generation["allowed_user_roles"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Personal key creation has been restricted by admin. Allowed roles={litellm.key_generation_settings['personal_key_generation']['allowed_user_roles']}. Your role={user_api_key_dict.user_role}",  # type: ignore
+        )
+
+    return True
+
+
+def _personal_key_generation_check(
+    user_api_key_dict: UserAPIKeyAuth, data: GenerateKeyRequest
+):
+
+    if (
+        litellm.key_generation_settings is None
+        or litellm.key_generation_settings.get("personal_key_generation") is None
+    ):
+        return True
+
+    _personal_key_generation = litellm.key_generation_settings["personal_key_generation"]  # type: ignore
+
+    _personal_key_membership_check(
+        user_api_key_dict,
+        personal_key_generation=_personal_key_generation,
+    )
+
+    _key_generation_required_param_check(
+        data,
+        _personal_key_generation.get("required_params"),
+    )
+
+    return True
+
+
+def key_generation_check(
+    user_api_key_dict: UserAPIKeyAuth, data: GenerateKeyRequest
+) -> bool:
+    """
+    Check if admin has restricted key creation to certain roles for teams or individuals
+    """
+    if (
+        litellm.key_generation_settings is None
+        or user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+    ):
+        return True
+
+    ## check if key is for team or individual
+    is_team_key = _is_team_key(data=data)
+
+    if is_team_key:
+        return _team_key_generation_check(
+            user_api_key_dict=user_api_key_dict, data=data
+        )
+    else:
+        return _personal_key_generation_check(
+            user_api_key_dict=user_api_key_dict, data=data
+        )
+
 
 router = APIRouter()
 
@@ -83,6 +222,13 @@ async def generate_key_fn(  # noqa: PLR0915
     - model_max_budget: Optional[dict] - key-specific model budget in USD. Example - {"text-davinci-002": 0.5, "gpt-3.5-turbo": 0.5}. IF null or {} then no model specific budget.
     - model_rpm_limit: Optional[dict] - key-specific model rpm limit. Example - {"text-davinci-002": 1000, "gpt-3.5-turbo": 1000}. IF null or {} then no model specific rpm limit.
     - model_tpm_limit: Optional[dict] - key-specific model tpm limit. Example - {"text-davinci-002": 1000, "gpt-3.5-turbo": 1000}. IF null or {} then no model specific tpm limit.
+    - allowed_cache_controls: Optional[list] - List of allowed cache control values. Example - ["no-cache", "no-store"]. See all values - https://docs.litellm.ai/docs/proxy/caching#turn-on--off-caching-per-request
+    - blocked: Optional[bool] - Whether the key is blocked.
+    - rpm_limit: Optional[int] - Specify rpm limit for a given key (Requests per minute)
+    - tpm_limit: Optional[int] - Specify tpm limit for a given key (Tokens per minute)
+    - soft_budget: Optional[float] - Specify soft budget for a given key. Will trigger a slack alert when this soft budget is reached.
+    - tags: Optional[List[str]] - Tags for [tracking spend](https://litellm.vercel.app/docs/proxy/enterprise#tracking-spend-for-custom-tags) and/or doing [tag-based routing](https://litellm.vercel.app/docs/proxy/tag_routing).
+
     Examples:
 
     1. Allow users to turn on/off pii masking
@@ -124,6 +270,8 @@ async def generate_key_fn(  # noqa: PLR0915
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN, detail=message
                 )
+        elif litellm.key_generation_settings is not None:
+            key_generation_check(user_api_key_dict=user_api_key_dict, data=data)
         # check if user set default key/generate params on config.yaml
         if litellm.default_key_generate_params is not None:
             for elem in data:
@@ -173,10 +321,10 @@ async def generate_key_fn(  # noqa: PLR0915
                                 )
                         # Compare durations
                         elif key in ["budget_duration", "duration"]:
-                            upperbound_duration = _duration_in_seconds(
+                            upperbound_duration = duration_in_seconds(
                                 duration=upperbound_value
                             )
-                            user_duration = _duration_in_seconds(duration=value)
+                            user_duration = duration_in_seconds(duration=value)
                             if user_duration > upperbound_duration:
                                 raise HTTPException(
                                     status_code=400,
@@ -273,7 +421,7 @@ def prepare_key_update_data(
     if "duration" in non_default_values:
         duration = non_default_values.pop("duration")
         if duration and (isinstance(duration, str)) and len(duration) > 0:
-            duration_s = _duration_in_seconds(duration=duration)
+            duration_s = duration_in_seconds(duration=duration)
             expires = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
             non_default_values["expires"] = expires
 
@@ -284,7 +432,7 @@ def prepare_key_update_data(
             and (isinstance(budget_duration, str))
             and len(budget_duration) > 0
         ):
-            duration_s = _duration_in_seconds(duration=budget_duration)
+            duration_s = duration_in_seconds(duration=budget_duration)
             key_reset_at = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
             non_default_values["budget_reset_at"] = key_reset_at
 
@@ -349,6 +497,8 @@ async def update_key_fn(
     - send_invite_email: Optional[bool] - Send invite email to user_id
     - guardrails: Optional[List[str]] - List of active guardrails for the key
     - blocked: Optional[bool] - Whether the key is blocked
+    - aliases: Optional[dict] - Model aliases for the key - [Docs](https://litellm.vercel.app/docs/proxy/virtual_keys#model-aliases)
+    - config: Optional[dict] - [DEPRECATED PARAM] Key-specific config.
 
     Example:
     ```bash
@@ -782,19 +932,19 @@ async def generate_key_helper_fn(  # noqa: PLR0915
     if duration is None:  # allow tokens that never expire
         expires = None
     else:
-        duration_s = _duration_in_seconds(duration=duration)
+        duration_s = duration_in_seconds(duration=duration)
         expires = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
 
     if key_budget_duration is None:  # one-time budget
         key_reset_at = None
     else:
-        duration_s = _duration_in_seconds(duration=key_budget_duration)
+        duration_s = duration_in_seconds(duration=key_budget_duration)
         key_reset_at = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
 
     if budget_duration is None:  # one-time budget
         reset_at = None
     else:
-        duration_s = _duration_in_seconds(duration=budget_duration)
+        duration_s = duration_in_seconds(duration=budget_duration)
         reset_at = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
 
     aliases_json = json.dumps(aliases)
