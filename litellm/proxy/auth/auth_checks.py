@@ -60,6 +60,7 @@ def common_checks(  # noqa: PLR0915
     global_proxy_spend: Optional[float],
     general_settings: dict,
     route: str,
+    llm_router: Optional[litellm.Router],
 ) -> bool:
     """
     Common checks across jwt + key-based auth.
@@ -97,7 +98,12 @@ def common_checks(  # noqa: PLR0915
             # this means the team has access to all models on the proxy
             pass
         # check if the team model is an access_group
-        elif model_in_access_group(_model, team_object.models) is True:
+        elif (
+            model_in_access_group(
+                model=_model, team_models=team_object.models, llm_router=llm_router
+            )
+            is True
+        ):
             pass
         elif _model and "*" in _model:
             pass
@@ -373,36 +379,33 @@ async def get_end_user_object(
         return None
 
 
-def model_in_access_group(model: str, team_models: Optional[List[str]]) -> bool:
+def model_in_access_group(
+    model: str, team_models: Optional[List[str]], llm_router: Optional[litellm.Router]
+) -> bool:
     from collections import defaultdict
-
-    from litellm.proxy.proxy_server import llm_router
 
     if team_models is None:
         return True
     if model in team_models:
         return True
 
-    access_groups = defaultdict(list)
+    access_groups: dict[str, list[str]] = defaultdict(list)
     if llm_router:
-        access_groups = llm_router.get_model_access_groups()
+        access_groups = llm_router.get_model_access_groups(model_name=model)
 
-    models_in_current_access_groups = []
     if len(access_groups) > 0:  # check if token contains any model access groups
         for idx, m in enumerate(
             team_models
         ):  # loop token models, if any of them are an access group add the access group
             if m in access_groups:
-                # if it is an access group we need to remove it from valid_token.models
-                models_in_group = access_groups[m]
-                models_in_current_access_groups.extend(models_in_group)
+                return True
 
     # Filter out models that are access_groups
     filtered_models = [m for m in team_models if m not in access_groups]
-    filtered_models += models_in_current_access_groups
 
     if model in filtered_models:
         return True
+
     return False
 
 
@@ -586,26 +589,63 @@ async def _get_team_db_check(team_id: str, prisma_client: PrismaClient):
     )
 
 
-async def get_team_object(
-    team_id: str,
-    prisma_client: Optional[PrismaClient],
-    user_api_key_cache: DualCache,
-    parent_otel_span: Optional[Span] = None,
-    proxy_logging_obj: Optional[ProxyLogging] = None,
-    check_cache_only: Optional[bool] = None,
-) -> LiteLLM_TeamTableCachedObj:
-    """
-    - Check if team id in proxy Team Table
-    - if valid, return LiteLLM_TeamTable object with defined limits
-    - if not, then raise an error
-    """
-    if prisma_client is None:
-        raise Exception(
-            "No DB Connected. See - https://docs.litellm.ai/docs/proxy/virtual_keys"
-        )
+async def _get_team_object_from_db(team_id: str, prisma_client: PrismaClient):
+    return await prisma_client.db.litellm_teamtable.find_unique(
+        where={"team_id": team_id}
+    )
 
-    # check if in cache
-    key = "team_id:{}".format(team_id)
+
+async def _get_team_object_from_user_api_key_cache(
+    team_id: str,
+    prisma_client: PrismaClient,
+    user_api_key_cache: DualCache,
+    last_db_access_time: LimitedSizeOrderedDict,
+    db_cache_expiry: int,
+    proxy_logging_obj: Optional[ProxyLogging],
+    key: str,
+) -> LiteLLM_TeamTableCachedObj:
+    db_access_time_key = key
+    should_check_db = _should_check_db(
+        key=db_access_time_key,
+        last_db_access_time=last_db_access_time,
+        db_cache_expiry=db_cache_expiry,
+    )
+    if should_check_db:
+        response = await _get_team_db_check(
+            team_id=team_id, prisma_client=prisma_client
+        )
+    else:
+        response = None
+
+    if response is None:
+        raise Exception
+
+    _response = LiteLLM_TeamTableCachedObj(**response.dict())
+    # save the team object to cache
+    await _cache_team_object(
+        team_id=team_id,
+        team_table=_response,
+        user_api_key_cache=user_api_key_cache,
+        proxy_logging_obj=proxy_logging_obj,
+    )
+
+    # save to db access time
+    # save to db access time
+    _update_last_db_access_time(
+        key=db_access_time_key,
+        value=_response,
+        last_db_access_time=last_db_access_time,
+    )
+
+    return _response
+
+
+async def _get_team_object_from_cache(
+    key: str,
+    proxy_logging_obj: Optional[ProxyLogging],
+    user_api_key_cache: DualCache,
+    parent_otel_span: Optional[Span],
+) -> Optional[LiteLLM_TeamTableCachedObj]:
     cached_team_obj: Optional[LiteLLM_TeamTableCachedObj] = None
 
     ## CHECK REDIS CACHE ##
@@ -613,6 +653,7 @@ async def get_team_object(
         proxy_logging_obj is not None
         and proxy_logging_obj.internal_usage_cache.dual_cache
     ):
+
         cached_team_obj = (
             await proxy_logging_obj.internal_usage_cache.dual_cache.async_get_cache(
                 key=key, parent_otel_span=parent_otel_span
@@ -628,47 +669,58 @@ async def get_team_object(
         elif isinstance(cached_team_obj, LiteLLM_TeamTableCachedObj):
             return cached_team_obj
 
-    if check_cache_only:
+    return None
+
+
+async def get_team_object(
+    team_id: str,
+    prisma_client: Optional[PrismaClient],
+    user_api_key_cache: DualCache,
+    parent_otel_span: Optional[Span] = None,
+    proxy_logging_obj: Optional[ProxyLogging] = None,
+    check_cache_only: Optional[bool] = None,
+    check_db_only: Optional[bool] = None,
+) -> LiteLLM_TeamTableCachedObj:
+    """
+    - Check if team id in proxy Team Table
+    - if valid, return LiteLLM_TeamTable object with defined limits
+    - if not, then raise an error
+    """
+    if prisma_client is None:
         raise Exception(
-            f"Team doesn't exist in cache + check_cache_only=True. Team={team_id}."
+            "No DB Connected. See - https://docs.litellm.ai/docs/proxy/virtual_keys"
         )
+
+    # check if in cache
+    key = "team_id:{}".format(team_id)
+
+    if not check_db_only:
+        cached_team_obj = await _get_team_object_from_cache(
+            key=key,
+            proxy_logging_obj=proxy_logging_obj,
+            user_api_key_cache=user_api_key_cache,
+            parent_otel_span=parent_otel_span,
+        )
+
+        if cached_team_obj is not None:
+            return cached_team_obj
+
+        if check_cache_only:
+            raise Exception(
+                f"Team doesn't exist in cache + check_cache_only=True. Team={team_id}."
+            )
 
     # else, check db
     try:
-        db_access_time_key = "team_id:{}".format(team_id)
-        should_check_db = _should_check_db(
-            key=db_access_time_key,
-            last_db_access_time=last_db_access_time,
-            db_cache_expiry=db_cache_expiry,
-        )
-        if should_check_db:
-            response = await _get_team_db_check(
-                team_id=team_id, prisma_client=prisma_client
-            )
-        else:
-            response = None
-
-        if response is None:
-            raise Exception
-
-        _response = LiteLLM_TeamTableCachedObj(**response.dict())
-        # save the team object to cache
-        await _cache_team_object(
+        return await _get_team_object_from_user_api_key_cache(
             team_id=team_id,
-            team_table=_response,
+            prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
             proxy_logging_obj=proxy_logging_obj,
-        )
-
-        # save to db access time
-        # save to db access time
-        _update_last_db_access_time(
-            key=db_access_time_key,
-            value=_response,
             last_db_access_time=last_db_access_time,
+            db_cache_expiry=db_cache_expiry,
+            key=key,
         )
-
-        return _response
     except Exception:
         raise Exception(
             f"Team doesn't exist in db. Team={team_id}. Create team via `/team/new` call."
@@ -825,7 +877,10 @@ async def get_org_object(
 
 
 async def can_key_call_model(
-    model: str, llm_model_list: Optional[list], valid_token: UserAPIKeyAuth
+    model: str,
+    llm_model_list: Optional[list],
+    valid_token: UserAPIKeyAuth,
+    llm_router: Optional[litellm.Router],
 ) -> Literal[True]:
     """
     Checks if token can call a given model
@@ -845,35 +900,29 @@ async def can_key_call_model(
     )
     from collections import defaultdict
 
-    from litellm.proxy.proxy_server import llm_router
-
     access_groups = defaultdict(list)
     if llm_router:
-        access_groups = llm_router.get_model_access_groups()
+        access_groups = llm_router.get_model_access_groups(model_name=model)
 
-    models_in_current_access_groups = []
-    if len(access_groups) > 0:  # check if token contains any model access groups
+    if (
+        len(access_groups) > 0 and llm_router is not None
+    ):  # check if token contains any model access groups
         for idx, m in enumerate(
             valid_token.models
         ):  # loop token models, if any of them are an access group add the access group
             if m in access_groups:
-                # if it is an access group we need to remove it from valid_token.models
-                models_in_group = access_groups[m]
-                models_in_current_access_groups.extend(models_in_group)
+                return True
 
     # Filter out models that are access_groups
     filtered_models = [m for m in valid_token.models if m not in access_groups]
 
-    filtered_models += models_in_current_access_groups
     verbose_proxy_logger.debug(f"model: {model}; allowed_models: {filtered_models}")
 
     all_model_access: bool = False
 
     if (
-        len(filtered_models) == 0
-        or "*" in filtered_models
-        or "openai/*" in filtered_models
-    ):
+        len(filtered_models) == 0 and len(valid_token.models) == 0
+    ) or "*" in filtered_models:
         all_model_access = True
 
     if model is not None and model not in filtered_models and all_model_access is False:

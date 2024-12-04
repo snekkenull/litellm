@@ -1982,7 +1982,6 @@ class MemberAddRequest(LiteLLMBase):
             # Replace member_data with the single Member object
             data["member"] = member
         # Call the superclass __init__ method to initialize the object
-        traceback.print_stack()
         super().__init__(**data)
 
 
@@ -2184,3 +2183,11 @@ PassThroughEndpointLoggingResultValues = Union[
 class PassThroughEndpointLoggingTypedDict(TypedDict):
     result: Optional[PassThroughEndpointLoggingResultValues]
     kwargs: dict
+
+
+LiteLLM_ManagementEndpoint_MetadataFields = [
+    "model_rpm_limit",
+    "model_tpm_limit",
+    "guardrails",
+    "tags",
+]

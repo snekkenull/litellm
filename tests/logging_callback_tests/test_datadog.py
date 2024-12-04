@@ -2,6 +2,7 @@ import io
 import os
 import sys
 
+
 sys.path.insert(0, os.path.abspath("../.."))
 
 import asyncio
@@ -16,9 +17,124 @@ import pytest
 import litellm
 from litellm import completion
 from litellm._logging import verbose_logger
-from litellm.integrations.datadog.types import DatadogPayload
+from litellm.integrations.datadog.datadog import *
+from datetime import datetime, timedelta
+from litellm.types.utils import (
+    StandardLoggingPayload,
+    StandardLoggingModelInformation,
+    StandardLoggingMetadata,
+    StandardLoggingHiddenParams,
+)
 
 verbose_logger.setLevel(logging.DEBUG)
+
+
+def create_standard_logging_payload() -> StandardLoggingPayload:
+    return StandardLoggingPayload(
+        id="test_id",
+        call_type="completion",
+        response_cost=0.1,
+        response_cost_failure_debug_info=None,
+        status="success",
+        total_tokens=30,
+        prompt_tokens=20,
+        completion_tokens=10,
+        startTime=1234567890.0,
+        endTime=1234567891.0,
+        completionStartTime=1234567890.5,
+        model_map_information=StandardLoggingModelInformation(
+            model_map_key="gpt-3.5-turbo", model_map_value=None
+        ),
+        model="gpt-3.5-turbo",
+        model_id="model-123",
+        model_group="openai-gpt",
+        api_base="https://api.openai.com",
+        metadata=StandardLoggingMetadata(
+            user_api_key_hash="test_hash",
+            user_api_key_org_id=None,
+            user_api_key_alias="test_alias",
+            user_api_key_team_id="test_team",
+            user_api_key_user_id="test_user",
+            user_api_key_team_alias="test_team_alias",
+            spend_logs_metadata=None,
+            requester_ip_address="127.0.0.1",
+            requester_metadata=None,
+        ),
+        cache_hit=False,
+        cache_key=None,
+        saved_cache_cost=0.0,
+        request_tags=[],
+        end_user=None,
+        requester_ip_address="127.0.0.1",
+        messages=[{"role": "user", "content": "Hello, world!"}],
+        response={"choices": [{"message": {"content": "Hi there!"}}]},
+        error_str=None,
+        model_parameters={"stream": True},
+        hidden_params=StandardLoggingHiddenParams(
+            model_id="model-123",
+            cache_key=None,
+            api_base="https://api.openai.com",
+            response_cost="0.1",
+            additional_headers=None,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_datadog_logging_payload():
+    """Test creating a DataDog logging payload from a standard logging object"""
+    dd_logger = DataDogLogger()
+    standard_payload = create_standard_logging_payload()
+
+    # Create mock kwargs with the standard logging object
+    kwargs = {"standard_logging_object": standard_payload}
+
+    # Test payload creation
+    dd_payload = dd_logger.create_datadog_logging_payload(
+        kwargs=kwargs,
+        response_obj=None,
+        start_time=datetime.now(),
+        end_time=datetime.now(),
+    )
+
+    # Verify payload structure
+    assert dd_payload["ddsource"] == os.getenv("DD_SOURCE", "litellm")
+    assert dd_payload["service"] == "litellm-server"
+    assert dd_payload["status"] == DataDogStatus.INFO
+
+    # verify the message field == standard_payload
+    dict_payload = json.loads(dd_payload["message"])
+    assert dict_payload == standard_payload
+
+
+@pytest.mark.asyncio
+async def test_datadog_failure_logging():
+    """Test logging a failure event to DataDog"""
+    dd_logger = DataDogLogger()
+    standard_payload = create_standard_logging_payload()
+    standard_payload["status"] = "failure"  # Set status to failure
+    standard_payload["error_str"] = "Test error"
+
+    kwargs = {"standard_logging_object": standard_payload}
+
+    dd_payload = dd_logger.create_datadog_logging_payload(
+        kwargs=kwargs,
+        response_obj=None,
+        start_time=datetime.now(),
+        end_time=datetime.now(),
+    )
+
+    assert (
+        dd_payload["status"] == DataDogStatus.ERROR
+    )  # Verify failure maps to warning status
+
+    # verify the message field == standard_payload
+    dict_payload = json.loads(dd_payload["message"])
+    assert dict_payload == standard_payload
+
+    # verify error_str is in the message field
+    assert "error_str" in dict_payload
+    assert dict_payload["error_str"] == "Test error"
 
 
 @pytest.mark.asyncio
@@ -111,22 +227,7 @@ async def test_datadog_logging_http_request():
         # Parse the 'message' field as JSON and check its structure
         message = json.loads(body[0]["message"])
 
-        expected_message_fields = [
-            "id",
-            "call_type",
-            "cache_hit",
-            "start_time",
-            "end_time",
-            "response_time",
-            "model",
-            "user",
-            "model_parameters",
-            "spend",
-            "messages",
-            "response",
-            "usage",
-            "metadata",
-        ]
+        expected_message_fields = StandardLoggingPayload.__annotations__.keys()
 
         for field in expected_message_fields:
             assert field in message, f"Field '{field}' is missing from the message"
@@ -138,7 +239,6 @@ async def test_datadog_logging_http_request():
         assert "temperature" in message["model_parameters"]
         assert "max_tokens" in message["model_parameters"]
         assert isinstance(message["response"], dict)
-        assert isinstance(message["usage"], dict)
         assert isinstance(message["metadata"], dict)
 
     except Exception as e:
@@ -244,3 +344,101 @@ async def test_datadog_logging():
         await asyncio.sleep(5)
     except Exception as e:
         print(e)
+
+
+@pytest.mark.asyncio
+async def test_datadog_payload_environment_variables():
+    """Test that DataDog payload correctly includes environment variables in the payload structure"""
+    try:
+        # Set test environment variables
+        test_env = {
+            "DD_ENV": "test-env",
+            "DD_SERVICE": "test-service",
+            "DD_VERSION": "1.0.0",
+            "DD_SOURCE": "test-source",
+            "DD_API_KEY": "fake-key",
+            "DD_SITE": "datadoghq.com",
+        }
+
+        with patch.dict(os.environ, test_env):
+            dd_logger = DataDogLogger()
+            standard_payload = create_standard_logging_payload()
+
+            # Create the payload
+            dd_payload = dd_logger.create_datadog_logging_payload(
+                kwargs={"standard_logging_object": standard_payload},
+                response_obj=None,
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+            )
+
+            print("dd payload=", json.dumps(dd_payload, indent=2))
+
+            # Verify payload structure and environment variables
+            assert (
+                dd_payload["ddsource"] == "test-source"
+            ), "Incorrect source in payload"
+            assert (
+                dd_payload["service"] == "test-service"
+            ), "Incorrect service in payload"
+            assert (
+                dd_payload["ddtags"]
+                == "env:test-env,service:test-service,version:1.0.0"
+            ), "Incorrect tags in payload"
+
+    except Exception as e:
+        pytest.fail(f"Test failed with exception: {str(e)}")
+
+
+@pytest.mark.asyncio
+async def test_datadog_payload_content_truncation():
+    """
+    Test that DataDog payload correctly truncates long content
+
+    DataDog has a limit of 1MB for the logged payload size.
+    """
+    dd_logger = DataDogLogger()
+
+    # Create a standard payload with very long content
+    standard_payload = create_standard_logging_payload()
+    long_content = "x" * 80_000  # Create string longer than MAX_STR_LENGTH (10_000)
+
+    # Modify payload with long content
+    standard_payload["error_str"] = long_content
+    standard_payload["messages"] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": long_content,
+                        "detail": "low",
+                    },
+                }
+            ],
+        }
+    ]
+    standard_payload["response"] = {"choices": [{"message": {"content": long_content}}]}
+
+    # Create the payload
+    dd_payload = dd_logger.create_datadog_logging_payload(
+        kwargs={"standard_logging_object": standard_payload},
+        response_obj=None,
+        start_time=datetime.now(),
+        end_time=datetime.now(),
+    )
+
+    print("dd_payload", json.dumps(dd_payload, indent=2))
+
+    # Parse the message back to dict to verify truncation
+    message_dict = json.loads(dd_payload["message"])
+
+    # Verify truncation of fields
+    assert len(message_dict["error_str"]) < 10_100, "error_str not truncated correctly"
+    assert (
+        len(str(message_dict["messages"])) < 10_100
+    ), "messages not truncated correctly"
+    assert (
+        len(str(message_dict["response"])) < 10_100
+    ), "response not truncated correctly"

@@ -107,6 +107,10 @@ def _get_image_mime_type_from_url(url: str) -> Optional[str]:
         return "image/png"
     elif url.endswith(".webp"):
         return "image/webp"
+    elif url.endswith(".mp4"):
+        return "video/mp4"
+    elif url.endswith(".pdf"):
+        return "application/pdf"
     return None
 
 
@@ -294,7 +298,12 @@ def _transform_request_body(
     optional_params = {k: v for k, v in optional_params.items() if k not in remove_keys}
 
     try:
-        content = _gemini_convert_messages_with_history(messages=messages)
+        if custom_llm_provider == "gemini":
+            content = litellm.GoogleAIStudioGeminiConfig._transform_messages(
+                messages=messages
+            )
+        else:
+            content = litellm.VertexGeminiConfig._transform_messages(messages=messages)
         tools: Optional[Tools] = optional_params.pop("tools", None)
         tool_choice: Optional[ToolConfig] = optional_params.pop("tool_choice", None)
         safety_settings: Optional[List[SafetSettingsConfig]] = optional_params.pop(

@@ -547,6 +547,7 @@ async def team_member_add(
         parent_otel_span=None,
         proxy_logging_obj=proxy_logging_obj,
         check_cache_only=False,
+        check_db_only=True,
     )
     if existing_team_row is None:
         raise HTTPException(
@@ -696,7 +697,7 @@ async def team_member_delete(
 
     If user doesn't exist, an exception will be raised
     ```
-    curl -X POST 'http://0.0.0.0:8000/team/update' \
+    curl -X POST 'http://0.0.0.0:8000/team/member_delete' \
 
     -H 'Authorization: Bearer sk-1234' \
 
@@ -1366,6 +1367,7 @@ async def list_team(
             """.format(
                 team.team_id, team.model_dump(), str(e)
             )
-            raise HTTPException(status_code=400, detail={"error": team_exception})
+            verbose_proxy_logger.exception(team_exception)
+            continue
 
     return returned_responses

@@ -33,6 +33,7 @@ from litellm.types.llms.openai import (
     ChatCompletionAssistantToolCall,
     ChatCompletionFunctionMessage,
     ChatCompletionImageObject,
+    ChatCompletionImageUrlObject,
     ChatCompletionTextObject,
     ChatCompletionToolCallFunctionChunk,
     ChatCompletionToolMessage,
@@ -681,6 +682,27 @@ def construct_tool_use_system_prompt(
     return tool_use_system_prompt
 
 
+def convert_generic_image_chunk_to_openai_image_obj(
+    image_chunk: GenericImageParsingChunk,
+) -> str:
+    """
+    Convert a generic image chunk to an OpenAI image object.
+
+    Input:
+    GenericImageParsingChunk(
+        type="base64",
+        media_type="image/jpeg",
+        data="...",
+    )
+
+    Return:
+    "data:image/jpeg;base64,{base64_image}"
+    """
+    return "data:{};{},{}".format(
+        image_chunk["media_type"], image_chunk["type"], image_chunk["data"]
+    )
+
+
 def convert_to_anthropic_image_obj(openai_image_url: str) -> GenericImageParsingChunk:
     """
     Input:
@@ -706,6 +728,7 @@ def convert_to_anthropic_image_obj(openai_image_url: str) -> GenericImageParsing
             data=base64_data,
         )
     except Exception as e:
+        traceback.print_exc()
         if "Error: Unable to fetch image from URL" in str(e):
             raise e
         raise Exception(
@@ -1136,15 +1159,44 @@ def convert_to_anthropic_tool_result(
         ]
     }
     """
-    content_str: str = ""
+    anthropic_content: Union[
+        str,
+        List[Union[AnthropicMessagesToolResultContent, AnthropicMessagesImageParam]],
+    ] = ""
     if isinstance(message["content"], str):
-        content_str = message["content"]
+        anthropic_content = message["content"]
     elif isinstance(message["content"], List):
         content_list = message["content"]
+        anthropic_content_list: List[
+            Union[AnthropicMessagesToolResultContent, AnthropicMessagesImageParam]
+        ] = []
         for content in content_list:
             if content["type"] == "text":
-                content_str += content["text"]
+                anthropic_content_list.append(
+                    AnthropicMessagesToolResultContent(
+                        type="text",
+                        text=content["text"],
+                    )
+                )
+            elif content["type"] == "image_url":
+                if isinstance(content["image_url"], str):
+                    image_chunk = convert_to_anthropic_image_obj(content["image_url"])
+                else:
+                    image_chunk = convert_to_anthropic_image_obj(
+                        content["image_url"]["url"]
+                    )
+                anthropic_content_list.append(
+                    AnthropicMessagesImageParam(
+                        type="image",
+                        source=AnthropicContentParamSource(
+                            type="base64",
+                            media_type=image_chunk["media_type"],
+                            data=image_chunk["data"],
+                        ),
+                    )
+                )
 
+        anthropic_content = anthropic_content_list
     anthropic_tool_result: Optional[AnthropicMessagesToolResultParam] = None
     ## PROMPT CACHING CHECK ##
     cache_control = message.get("cache_control", None)
@@ -1155,14 +1207,14 @@ def convert_to_anthropic_tool_result(
         # We can't determine from openai message format whether it's a successful or
         # error call result so default to the successful result template
         anthropic_tool_result = AnthropicMessagesToolResultParam(
-            type="tool_result", tool_use_id=tool_call_id, content=content_str
+            type="tool_result", tool_use_id=tool_call_id, content=anthropic_content
         )
 
     if message["role"] == "function":
         function_message: ChatCompletionFunctionMessage = message
         tool_call_id = function_message.get("tool_call_id") or str(uuid.uuid4())
         anthropic_tool_result = AnthropicMessagesToolResultParam(
-            type="tool_result", tool_use_id=tool_call_id, content=content_str
+            type="tool_result", tool_use_id=tool_call_id, content=anthropic_content
         )
 
     if anthropic_tool_result is None:

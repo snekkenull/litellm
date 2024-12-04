@@ -1243,6 +1243,19 @@ def test_bedrock_cross_region_inference(model):
     )
 
 
+@pytest.mark.parametrize(
+    "model, expected_base_model",
+    [
+        (
+            "apac.anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        ),
+    ],
+)
+def test_bedrock_get_base_model(model, expected_base_model):
+    assert litellm.AmazonConverseConfig()._get_base_model(model) == expected_base_model
+
+
 from litellm.llms.prompt_templates.factory import _bedrock_converse_messages_pt
 
 
@@ -1921,3 +1934,12 @@ def test_bedrock_completion_test_4(modify_params):
         with pytest.raises(Exception) as e:
             litellm.completion(**data)
         assert "litellm.modify_params" in str(e.value)
+
+
+def test_bedrock_context_window_error():
+    with pytest.raises(litellm.ContextWindowExceededError) as e:
+        litellm.completion(
+            model="bedrock/claude-3-5-sonnet-20240620",
+            messages=[{"role": "user", "content": "Hello, world!"}],
+            mock_response=Exception("prompt is too long"),
+        )
