@@ -1527,12 +1527,13 @@ def completion(  # type: ignore # noqa: PLR0915
                 or get_secret("OPENAI_API_BASE")
                 or "https://api.openai.com/v1"
             )
-            openai.organization = (
+            organization = (
                 organization
                 or litellm.organization
                 or get_secret("OPENAI_ORGANIZATION")
                 or None  # default - https://github.com/openai/openai-python/blob/284c1799070c723c6a553337134148a7ab088dd8/openai/util.py#L105
             )
+            openai.organization = organization
             # set API KEY
             api_key = (
                 api_key
@@ -1684,7 +1685,6 @@ def completion(  # type: ignore # noqa: PLR0915
                 or get_secret("CLARIFAI_API_BASE")
                 or "https://api.clarifai.com/v2"
             )
-
             custom_prompt_dict = custom_prompt_dict or litellm.custom_prompt_dict
             model_response = clarifai.completion(
                 model=model,
@@ -2603,7 +2603,10 @@ def completion(  # type: ignore # noqa: PLR0915
 
             base_model = litellm.AmazonConverseConfig()._get_base_model(model)
 
-            if base_model in litellm.BEDROCK_CONVERSE_MODELS:
+            if base_model in litellm.bedrock_converse_models or model.startswith(
+                "converse/"
+            ):
+                model = model.replace("converse/", "")
                 response = bedrock_converse_chat_completion.completion(
                     model=model,
                     messages=messages,
@@ -2622,6 +2625,7 @@ def completion(  # type: ignore # noqa: PLR0915
                     api_base=api_base,
                 )
             else:
+                model = model.replace("invoke/", "")
                 response = bedrock_chat_completion.completion(
                     model=model,
                     messages=messages,

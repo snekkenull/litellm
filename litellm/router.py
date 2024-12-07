@@ -83,6 +83,9 @@ from litellm.router_utils.fallback_event_handlers import (
     run_async_fallback,
     run_sync_fallback,
 )
+from litellm.router_utils.get_retry_from_policy import (
+    get_num_retries_from_retry_policy as _get_num_retries_from_retry_policy,
+)
 from litellm.router_utils.handle_error import (
     async_raise_no_deployment_exception,
     send_llm_exception_alert,
@@ -136,6 +139,7 @@ from litellm.types.router import (
 from litellm.types.services import ServiceLoggerPayload, ServiceTypes
 from litellm.types.utils import OPENAI_RESPONSE_HEADERS
 from litellm.types.utils import ModelInfo as ModelMapInfo
+from litellm.types.utils import StandardLoggingPayload
 from litellm.utils import (
     CustomStreamWrapper,
     ModelResponse,
@@ -1689,12 +1693,17 @@ class Router:
                 and potential_model_client is not None
                 and dynamic_api_key != potential_model_client.api_key
             ):
-                pass
+                model_client = None
             else:
-                pass
+                model_client = potential_model_client
 
-            response = await litellm.aspeech(**data, **kwargs)
-
+            response = await litellm.aspeech(
+                **{
+                    **data,
+                    "client": model_client,
+                    **kwargs,
+                }
+            )
             return response
         except Exception as e:
             asyncio.create_task(
@@ -2939,6 +2948,7 @@ class Router:
                 remaining_retries=num_retries,
                 num_retries=num_retries,
                 healthy_deployments=_healthy_deployments,
+                all_deployments=_all_deployments,
             )
 
             await asyncio.sleep(retry_after)
@@ -2971,6 +2981,7 @@ class Router:
                         remaining_retries=remaining_retries,
                         num_retries=num_retries,
                         healthy_deployments=_healthy_deployments,
+                        all_deployments=_all_deployments,
                     )
                     await asyncio.sleep(_timeout)
 
@@ -3148,6 +3159,7 @@ class Router:
         remaining_retries: int,
         num_retries: int,
         healthy_deployments: Optional[List] = None,
+        all_deployments: Optional[List] = None,
     ) -> Union[int, float]:
         """
         Calculate back-off, then retry
@@ -3156,10 +3168,14 @@ class Router:
             1. there are healthy deployments in the same model group
             2. there are fallbacks for the completion call
         """
-        if (
+
+        ## base case - single deployment
+        if all_deployments is not None and len(all_deployments) == 1:
+            pass
+        elif (
             healthy_deployments is not None
             and isinstance(healthy_deployments, list)
-            and len(healthy_deployments) > 1
+            and len(healthy_deployments) > 0
         ):
             return 0
 
@@ -3241,6 +3257,7 @@ class Router:
                 remaining_retries=num_retries,
                 num_retries=num_retries,
                 healthy_deployments=_healthy_deployments,
+                all_deployments=_all_deployments,
             )
 
             ## LOGGING
@@ -3275,6 +3292,7 @@ class Router:
                         remaining_retries=remaining_retries,
                         num_retries=num_retries,
                         healthy_deployments=_healthy_deployments,
+                        all_deployments=_all_deployments,
                     )
                     time.sleep(_timeout)
 
@@ -3297,26 +3315,26 @@ class Router:
         Track remaining tpm/rpm quota for model in model_list
         """
         try:
+            standard_logging_object: Optional[StandardLoggingPayload] = kwargs.get(
+                "standard_logging_object", None
+            )
+            if standard_logging_object is None:
+                raise ValueError("standard_logging_object is None")
             if kwargs["litellm_params"].get("metadata") is None:
                 pass
             else:
                 deployment_name = kwargs["litellm_params"]["metadata"].get(
                     "deployment", None
                 )  # stable name - works for wildcard routes as well
-                model_group = kwargs["litellm_params"]["metadata"].get(
-                    "model_group", None
-                )
-                model_info = kwargs["litellm_params"].get("model_info", {}) or {}
-                id = model_info.get("id", None)
+                model_group = standard_logging_object.get("model_group", None)
+                id = standard_logging_object.get("model_id", None)
                 if model_group is None or id is None:
                     return
                 elif isinstance(id, int):
                     id = str(id)
 
                 parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
-
-                _usage_obj = completion_response.get("usage")
-                total_tokens = _usage_obj.get("total_tokens", 0) if _usage_obj else 0
+                total_tokens: float = standard_logging_object.get("total_tokens", 0)
 
                 # ------------
                 # Setup values
@@ -5594,53 +5612,12 @@ class Router:
     def get_num_retries_from_retry_policy(
         self, exception: Exception, model_group: Optional[str] = None
     ):
-        """
-        BadRequestErrorRetries: Optional[int] = None
-        AuthenticationErrorRetries: Optional[int] = None
-        TimeoutErrorRetries: Optional[int] = None
-        RateLimitErrorRetries: Optional[int] = None
-        ContentPolicyViolationErrorRetries: Optional[int] = None
-        """
-        # if we can find the exception then in the retry policy -> return the number of retries
-        retry_policy: Optional[RetryPolicy] = self.retry_policy
-
-        if (
-            self.model_group_retry_policy is not None
-            and model_group is not None
-            and model_group in self.model_group_retry_policy
-        ):
-            retry_policy = self.model_group_retry_policy.get(model_group, None)  # type: ignore
-
-        if retry_policy is None:
-            return None
-        if isinstance(retry_policy, dict):
-            retry_policy = RetryPolicy(**retry_policy)
-
-        if (
-            isinstance(exception, litellm.BadRequestError)
-            and retry_policy.BadRequestErrorRetries is not None
-        ):
-            return retry_policy.BadRequestErrorRetries
-        if (
-            isinstance(exception, litellm.AuthenticationError)
-            and retry_policy.AuthenticationErrorRetries is not None
-        ):
-            return retry_policy.AuthenticationErrorRetries
-        if (
-            isinstance(exception, litellm.Timeout)
-            and retry_policy.TimeoutErrorRetries is not None
-        ):
-            return retry_policy.TimeoutErrorRetries
-        if (
-            isinstance(exception, litellm.RateLimitError)
-            and retry_policy.RateLimitErrorRetries is not None
-        ):
-            return retry_policy.RateLimitErrorRetries
-        if (
-            isinstance(exception, litellm.ContentPolicyViolationError)
-            and retry_policy.ContentPolicyViolationErrorRetries is not None
-        ):
-            return retry_policy.ContentPolicyViolationErrorRetries
+        return _get_num_retries_from_retry_policy(
+            exception=exception,
+            model_group=model_group,
+            model_group_retry_policy=self.model_group_retry_policy,
+            retry_policy=self.retry_policy,
+        )
 
     def get_allowed_fails_from_policy(self, exception: Exception):
         """

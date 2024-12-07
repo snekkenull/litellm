@@ -97,6 +97,10 @@ from litellm.litellm_core_utils.rules import Rules
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.litellm_core_utils.token_counter import get_modified_max_tokens
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.router_utils.get_retry_from_policy import (
+    get_num_retries_from_retry_policy,
+    reset_retry_policy,
+)
 from litellm.secret_managers.main import get_secret
 from litellm.types.llms.openai import (
     AllMessageValues,
@@ -918,6 +922,14 @@ def client(original_function):  # noqa: PLR0915
                 num_retries = (
                     kwargs.get("num_retries", None) or litellm.num_retries or None
                 )
+                if kwargs.get("retry_policy", None):
+                    num_retries = get_num_retries_from_retry_policy(
+                        exception=e,
+                        retry_policy=kwargs.get("retry_policy"),
+                    )
+                    kwargs["retry_policy"] = (
+                        reset_retry_policy()
+                    )  # prevent infinite loops
                 litellm.num_retries = (
                     None  # set retries to None to prevent infinite loops
                 )
@@ -1137,6 +1149,13 @@ def client(original_function):  # noqa: PLR0915
                 num_retries = (
                     kwargs.get("num_retries", None) or litellm.num_retries or None
                 )
+                if kwargs.get("retry_policy", None):
+                    num_retries = get_num_retries_from_retry_policy(
+                        exception=e,
+                        retry_policy=kwargs.get("retry_policy"),
+                    )
+                    kwargs["retry_policy"] = reset_retry_policy()
+
                 litellm.num_retries = (
                     None  # set retries to None to prevent infinite loops
                 )
@@ -1874,22 +1893,11 @@ def supports_prompt_caching(
     Raises:
     Exception: If the given model is not found or there's an error in retrieval.
     """
-    try:
-        model, custom_llm_provider, _, _ = litellm.get_llm_provider(
-            model=model, custom_llm_provider=custom_llm_provider
-        )
-
-        model_info = litellm.get_model_info(
-            model=model, custom_llm_provider=custom_llm_provider
-        )
-
-        if model_info.get("supports_prompt_caching", False) is True:
-            return True
-        return False
-    except Exception as e:
-        raise Exception(
-            f"Model not found or error in checking prompt caching support. You passed model={model}, custom_llm_provider={custom_llm_provider}. Error: {str(e)}"
-        )
+    return _supports_factory(
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+        key="supports_prompt_caching",
+    )
 
 
 def supports_vision(model: str, custom_llm_provider: Optional[str] = None) -> bool:
@@ -3142,7 +3150,7 @@ def get_optional_params(  # noqa: PLR0915
             model=model, custom_llm_provider=custom_llm_provider
         )
         base_model = litellm.AmazonConverseConfig()._get_base_model(model)
-        if base_model in litellm.BEDROCK_CONVERSE_MODELS:
+        if base_model in litellm.bedrock_converse_models:
             _check_valid_arg(supported_params=supported_params)
             optional_params = litellm.AmazonConverseConfig().map_openai_params(
                 model=model,
@@ -4308,6 +4316,10 @@ def _strip_stable_vertex_version(model_name) -> str:
     return re.sub(r"-\d+$", "", model_name)
 
 
+def _strip_bedrock_region(model_name) -> str:
+    return litellm.AmazonConverseConfig()._get_base_model(model_name)
+
+
 def _strip_openai_finetune_model_name(model_name: str) -> str:
     """
     Strips the organization, custom suffix, and ID from an OpenAI fine-tuned model name.
@@ -4324,14 +4336,48 @@ def _strip_openai_finetune_model_name(model_name: str) -> str:
     return re.sub(r"(:[^:]+){3}$", "", model_name)
 
 
-def _strip_model_name(model: str) -> str:
-    strip_version = _strip_stable_vertex_version(model_name=model)
-    strip_finetune = _strip_openai_finetune_model_name(model_name=strip_version)
-    return strip_finetune
+def _strip_model_name(model: str, custom_llm_provider: Optional[str]) -> str:
+    if custom_llm_provider and custom_llm_provider == "bedrock":
+        strip_bedrock_region = _strip_bedrock_region(model_name=model)
+        return strip_bedrock_region
+    elif custom_llm_provider and (
+        custom_llm_provider == "vertex_ai" or custom_llm_provider == "gemini"
+    ):
+        strip_version = _strip_stable_vertex_version(model_name=model)
+        return strip_version
+    else:
+        strip_finetune = _strip_openai_finetune_model_name(model_name=model)
+        return strip_finetune
 
 
 def _get_model_info_from_model_cost(key: str) -> dict:
     return litellm.model_cost[key]
+
+
+def _check_provider_match(model_info: dict, custom_llm_provider: Optional[str]) -> bool:
+    """
+    Check if the model info provider matches the custom provider.
+    """
+    if custom_llm_provider and (
+        "litellm_provider" in model_info
+        and model_info["litellm_provider"] != custom_llm_provider
+    ):
+        if custom_llm_provider == "vertex_ai" and model_info[
+            "litellm_provider"
+        ].startswith("vertex_ai"):
+            return True
+        elif custom_llm_provider == "fireworks_ai" and model_info[
+            "litellm_provider"
+        ].startswith("fireworks_ai"):
+            return True
+        elif custom_llm_provider == "bedrock" and model_info[
+            "litellm_provider"
+        ].startswith("bedrock"):
+            return True
+        else:
+            return False
+
+    return True
 
 
 def get_model_info(  # noqa: PLR0915
@@ -4388,6 +4434,7 @@ def get_model_info(  # noqa: PLR0915
             supports_prompt_caching: Optional[bool]
             supports_audio_input: Optional[bool]
             supports_audio_output: Optional[bool]
+            supports_pdf_input: Optional[bool]
     Raises:
         Exception: If the model is not mapped yet.
 
@@ -4427,9 +4474,11 @@ def get_model_info(  # noqa: PLR0915
             return None
 
     try:
-        azure_llms = litellm.azure_llms
+        azure_llms = {**litellm.azure_llms, **litellm.azure_embedding_models}
         if model in azure_llms:
             model = azure_llms[model]
+        if custom_llm_provider is not None and custom_llm_provider == "vertex_ai_beta":
+            custom_llm_provider = "vertex_ai"
         if custom_llm_provider is not None and custom_llm_provider == "vertex_ai":
             if "meta/" + model in litellm.vertex_llama3_models:
                 model = "meta/" + model
@@ -4445,15 +4494,21 @@ def get_model_info(  # noqa: PLR0915
             except Exception:
                 split_model = model
             combined_model_name = model
-            stripped_model_name = _strip_model_name(model=model)
+            stripped_model_name = _strip_model_name(
+                model=model, custom_llm_provider=custom_llm_provider
+            )
             combined_stripped_model_name = stripped_model_name
         else:
             split_model = model
             combined_model_name = "{}/{}".format(custom_llm_provider, model)
-            stripped_model_name = _strip_model_name(model=model)
-            combined_stripped_model_name = "{}/{}".format(
-                custom_llm_provider, _strip_model_name(model=model)
+            stripped_model_name = _strip_model_name(
+                model=model, custom_llm_provider=custom_llm_provider
             )
+            combined_stripped_model_name = "{}/{}".format(
+                custom_llm_provider,
+                _strip_model_name(model=model, custom_llm_provider=custom_llm_provider),
+            )
+
         #########################
 
         supported_openai_params = litellm.get_supported_openai_params(
@@ -4476,6 +4531,7 @@ def get_model_info(  # noqa: PLR0915
                 supports_function_calling=None,
                 supports_assistant_prefill=None,
                 supports_prompt_caching=None,
+                supports_pdf_input=None,
             )
         elif custom_llm_provider == "ollama" or custom_llm_provider == "ollama_chat":
             return litellm.OllamaConfig().get_model_info(model)
@@ -4488,40 +4544,25 @@ def get_model_info(  # noqa: PLR0915
             4. 'stripped_model_name' in litellm.model_cost. Checks if 'ft:gpt-3.5-turbo' in model map, if 'ft:gpt-3.5-turbo:my-org:custom_suffix:id' given.
             5. 'split_model' in litellm.model_cost. Checks "llama3-8b-8192" in litellm.model_cost if model="groq/llama3-8b-8192"
             """
+
             _model_info: Optional[Dict[str, Any]] = None
             key: Optional[str] = None
             if combined_model_name in litellm.model_cost:
                 key = combined_model_name
                 _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
+                if not _check_provider_match(
+                    model_info=_model_info, custom_llm_provider=custom_llm_provider
                 ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    else:
-                        _model_info = None
+                    _model_info = None
             if _model_info is None and model in litellm.model_cost:
                 key = model
                 _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
+                if not _check_provider_match(
+                    model_info=_model_info, custom_llm_provider=custom_llm_provider
                 ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    elif custom_llm_provider == "fireworks_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("fireworks_ai"):
-                        pass
-                    else:
-                        _model_info = None
+                    _model_info = None
             if (
                 _model_info is None
                 and combined_stripped_model_name in litellm.model_cost
@@ -4529,57 +4570,26 @@ def get_model_info(  # noqa: PLR0915
                 key = combined_stripped_model_name
                 _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
+                if not _check_provider_match(
+                    model_info=_model_info, custom_llm_provider=custom_llm_provider
                 ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    elif custom_llm_provider == "fireworks_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("fireworks_ai"):
-                        pass
-                    else:
-                        _model_info = None
+                    _model_info = None
             if _model_info is None and stripped_model_name in litellm.model_cost:
                 key = stripped_model_name
                 _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
+                if not _check_provider_match(
+                    model_info=_model_info, custom_llm_provider=custom_llm_provider
                 ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    elif custom_llm_provider == "fireworks_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("fireworks_ai"):
-                        pass
-                    else:
-                        _model_info = None
-
+                    _model_info = None
             if _model_info is None and split_model in litellm.model_cost:
                 key = split_model
                 _model_info = _get_model_info_from_model_cost(key=key)
                 _model_info["supported_openai_params"] = supported_openai_params
-                if (
-                    "litellm_provider" in _model_info
-                    and _model_info["litellm_provider"] != custom_llm_provider
+                if not _check_provider_match(
+                    model_info=_model_info, custom_llm_provider=custom_llm_provider
                 ):
-                    if custom_llm_provider == "vertex_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("vertex_ai"):
-                        pass
-                    elif custom_llm_provider == "fireworks_ai" and _model_info[
-                        "litellm_provider"
-                    ].startswith("fireworks_ai"):
-                        pass
-                    else:
-                        _model_info = None
+                    _model_info = None
             if _model_info is None or key is None:
                 raise ValueError(
                     "This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
@@ -4675,6 +4685,7 @@ def get_model_info(  # noqa: PLR0915
                 ),
                 supports_audio_input=_model_info.get("supports_audio_input", False),
                 supports_audio_output=_model_info.get("supports_audio_output", False),
+                supports_pdf_input=_model_info.get("supports_pdf_input", False),
                 tpm=_model_info.get("tpm", None),
                 rpm=_model_info.get("rpm", None),
             )
@@ -6114,7 +6125,7 @@ def add_dummy_tool(custom_llm_provider: str) -> List[ChatCompletionToolParam]:
         ChatCompletionToolParam(
             type="function",
             function=ChatCompletionToolParamFunctionChunk(
-                name="dummy-tool",
+                name="dummy_tool",
                 description="This is a dummy tool call",  # provided to satisfy bedrock constraint.
                 parameters={
                     "type": "object",
@@ -6195,11 +6206,21 @@ class ProviderConfigManager:
         return OpenAIGPTConfig()
 
 
-def get_end_user_id_for_cost_tracking(litellm_params: dict) -> Optional[str]:
+def get_end_user_id_for_cost_tracking(
+    litellm_params: dict,
+    service_type: Literal["litellm_logging", "prometheus"] = "litellm_logging",
+) -> Optional[str]:
     """
     Used for enforcing `disable_end_user_cost_tracking` param.
+
+    service_type: "litellm_logging" or "prometheus" - used to allow prometheus only disable cost tracking.
     """
     proxy_server_request = litellm_params.get("proxy_server_request") or {}
     if litellm.disable_end_user_cost_tracking:
+        return None
+    if (
+        service_type == "prometheus"
+        and litellm.disable_end_user_cost_tracking_prometheus_only
+    ):
         return None
     return proxy_server_request.get("body", {}).get("user", None)

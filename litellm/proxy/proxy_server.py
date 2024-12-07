@@ -5225,6 +5225,7 @@ async def create_batch(
             is_router_model = is_known_model(model=router_model, llm_router=llm_router)
 
         _create_batch_data = CreateBatchRequest(**data)
+        custom_llm_provider = provider or _create_batch_data.pop("custom_llm_provider", None)  # type: ignore
 
         if (
             litellm.enable_loadbalancing_on_batch_endpoints is True
@@ -5241,10 +5242,10 @@ async def create_batch(
 
             response = await llm_router.acreate_batch(**_create_batch_data)  # type: ignore
         else:
-            if provider is None:
-                provider = "openai"
+            if custom_llm_provider is None:
+                custom_llm_provider = "openai"
             response = await litellm.acreate_batch(
-                custom_llm_provider=provider, **_create_batch_data  # type: ignore
+                custom_llm_provider=custom_llm_provider, **_create_batch_data  # type: ignore
             )
 
         ### ALERTING ###
@@ -5981,6 +5982,39 @@ async def new_budget(
             "created_by": user_api_key_dict.user_id or litellm_proxy_admin_name,
             "updated_by": user_api_key_dict.user_id or litellm_proxy_admin_name,
         }  # type: ignore
+    )
+
+    return response
+
+
+@router.post(
+    "/budget/update",
+    tags=["budget management"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def update_budget(
+    budget_obj: BudgetNew,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Create a new budget object. Can apply this to teams, orgs, end-users, keys.
+    """
+    global prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": CommonProxyErrors.db_not_connected_error.value},
+        )
+    if budget_obj.budget_id is None:
+        raise HTTPException(status_code=400, detail={"error": "budget_id is required"})
+
+    response = await prisma_client.db.litellm_budgettable.update(
+        where={"budget_id": budget_obj.budget_id},
+        data={
+            **budget_obj.model_dump(exclude_none=True),  # type: ignore
+            "updated_by": user_api_key_dict.user_id or litellm_proxy_admin_name,
+        },  # type: ignore
     )
 
     return response
@@ -8062,7 +8096,7 @@ async def new_invitation(
     ```
     curl -X POST 'http://localhost:4000/invitation/new' \
         -H 'Content-Type: application/json' \
-        -D '{
+        -d '{
             "user_id": "1234" // 👈 id of user in 'LiteLLM_UserTable'
         }'
     ```
@@ -8128,7 +8162,7 @@ async def invitation_info(
     ```
     curl -X POST 'http://localhost:4000/invitation/new' \
         -H 'Content-Type: application/json' \
-        -D '{
+        -d '{
             "user_id": "1234" // 👈 id of user in 'LiteLLM_UserTable'
         }'
     ```
@@ -8181,7 +8215,7 @@ async def invitation_update(
     ```
     curl -X POST 'http://localhost:4000/invitation/update' \
         -H 'Content-Type: application/json' \
-        -D '{
+        -d '{
             "invitation_id": "1234" // 👈 id of invitation in 'LiteLLM_InvitationTable'
             "is_accepted": True // when invitation is accepted
         }'
@@ -8242,7 +8276,7 @@ async def invitation_delete(
     ```
     curl -X POST 'http://localhost:4000/invitation/delete' \
         -H 'Content-Type: application/json' \
-        -D '{
+        -d '{
             "invitation_id": "1234" // 👈 id of invitation in 'LiteLLM_InvitationTable'
         }'
     ```

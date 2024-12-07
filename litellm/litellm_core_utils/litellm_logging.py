@@ -75,6 +75,7 @@ from ..integrations.helicone import HeliconeLogger
 from ..integrations.lago import LagoLogger
 from ..integrations.langfuse.langfuse import LangFuseLogger
 from ..integrations.langfuse.langfuse_handler import LangFuseHandler
+from ..integrations.langfuse.langfuse_prompt_management import LangfusePromptManagement
 from ..integrations.langsmith import LangsmithLogger
 from ..integrations.literal_ai import LiteralAILogger
 from ..integrations.logfire_logger import LogfireLevel, LogfireLogger
@@ -374,7 +375,11 @@ class Logging:
             for param in _supported_callback_params:
                 if param in kwargs:
                     _param_value = kwargs.pop(param)
-                    if _param_value is not None and "os.environ/" in _param_value:
+                    if (
+                        _param_value is not None
+                        and isinstance(_param_value, str)
+                        and "os.environ/" in _param_value
+                    ):
                         _param_value = get_secret_str(secret_name=_param_value)
                     standard_callback_dynamic_params[param] = _param_value  # type: ignore
         return standard_callback_dynamic_params
@@ -777,7 +782,12 @@ class Logging:
         return None
 
     def _success_handler_helper_fn(
-        self, result=None, start_time=None, end_time=None, cache_hit=None
+        self,
+        result=None,
+        start_time=None,
+        end_time=None,
+        cache_hit=None,
+        standard_logging_object: Optional[StandardLoggingPayload] = None,
     ):
         try:
             if start_time is None:
@@ -795,7 +805,9 @@ class Logging:
             ## if model in model cost map - log the response cost
             ## else set cost to None
             if (
-                result is not None and self.stream is not True
+                standard_logging_object is None
+                and result is not None
+                and self.stream is not True
             ):  # handle streaming separately
                 if (
                     isinstance(result, ModelResponse)
@@ -826,9 +838,11 @@ class Logging:
                                     "metadata"
                                 ] = {}
 
-                            self.model_call_details["litellm_params"]["metadata"][
+                            self.model_call_details["litellm_params"]["metadata"][  # type: ignore
                                 "hidden_params"
-                            ] = getattr(result, "_hidden_params", {})
+                            ] = getattr(
+                                result, "_hidden_params", {}
+                            )
                     ## STANDARDIZED LOGGING PAYLOAD
 
                     self.model_call_details["standard_logging_object"] = (
@@ -853,6 +867,10 @@ class Logging:
                             status="success",
                         )
                     )
+            elif standard_logging_object is not None:
+                self.model_call_details["standard_logging_object"] = (
+                    standard_logging_object
+                )
             else:  # streaming chunks + image gen.
                 self.model_call_details["response_cost"] = None
 
@@ -885,6 +903,7 @@ class Logging:
             end_time=end_time,
             result=result,
             cache_hit=cache_hit,
+            standard_logging_object=kwargs.get("standard_logging_object", None),
         )
         # print(f"original response in success handler: {self.model_call_details['original_response']}")
         try:
@@ -896,7 +915,10 @@ class Logging:
             ] = None
             if "complete_streaming_response" in self.model_call_details:
                 return  # break out of this.
-            if self.stream:
+            if self.stream and (
+                isinstance(result, litellm.ModelResponse)
+                or isinstance(result, TextCompletionResponse)
+            ):
                 complete_streaming_response: Optional[
                     Union[ModelResponse, TextCompletionResponse]
                 ] = _assemble_complete_response_from_streaming_chunks(
@@ -948,10 +970,10 @@ class Logging:
                 ),
                 result=result,
             )
-
             ## LOGGING HOOK ##
             for callback in callbacks:
                 if isinstance(callback, CustomLogger):
+
                     self.model_call_details, result = callback.logging_hook(
                         kwargs=self.model_call_details,
                         result=result,
@@ -1315,6 +1337,8 @@ class Logging:
                             "atranscription", False
                         )
                         is not True
+                        and self.call_type
+                        != CallTypes.pass_through.value  # pass-through endpoints call async_log_success_event
                     ):  # custom logger class
                         if self.stream and complete_streaming_response is None:
                             callback.log_stream_event(
@@ -1399,7 +1423,11 @@ class Logging:
             "Logging Details LiteLLM-Async Success Call, cache_hit={}".format(cache_hit)
         )
         start_time, end_time, result = self._success_handler_helper_fn(
-            start_time=start_time, end_time=end_time, result=result, cache_hit=cache_hit
+            start_time=start_time,
+            end_time=end_time,
+            result=result,
+            cache_hit=cache_hit,
+            standard_logging_object=kwargs.get("standard_logging_object", None),
         )
         ## BUILD COMPLETE STREAMED RESPONSE
         if "async_complete_streaming_response" in self.model_call_details:
@@ -1407,7 +1435,10 @@ class Logging:
         complete_streaming_response: Optional[
             Union[ModelResponse, TextCompletionResponse]
         ] = None
-        if self.stream is True:
+        if self.stream is True and (
+            isinstance(result, litellm.ModelResponse)
+            or isinstance(result, TextCompletionResponse)
+        ):
             complete_streaming_response: Optional[
                 Union[ModelResponse, TextCompletionResponse]
             ] = _assemble_complete_response_from_streaming_chunks(
@@ -2319,9 +2350,17 @@ def _init_custom_logger_compatible_class(  # noqa: PLR0915
         _mlflow_logger = MlflowLogger()
         _in_memory_loggers.append(_mlflow_logger)
         return _mlflow_logger  # type: ignore
+    elif logging_integration == "langfuse":
+        for callback in _in_memory_loggers:
+            if isinstance(callback, LangfusePromptManagement):
+                return callback
+
+        langfuse_logger = LangfusePromptManagement()
+        _in_memory_loggers.append(langfuse_logger)
+        return langfuse_logger  # type: ignore
 
 
-def get_custom_logger_compatible_class(
+def get_custom_logger_compatible_class(  # noqa: PLR0915
     logging_integration: litellm._custom_logger_compatible_callbacks_literal,
 ) -> Optional[CustomLogger]:
     if logging_integration == "lago":
@@ -2371,6 +2410,10 @@ def get_custom_logger_compatible_class(
     elif logging_integration == "opik":
         for callback in _in_memory_loggers:
             if isinstance(callback, OpikLogger):
+                return callback
+    elif logging_integration == "langfuse":
+        for callback in _in_memory_loggers:
+            if isinstance(callback, LangfusePromptManagement):
                 return callback
     elif logging_integration == "otel":
         from litellm.integrations.opentelemetry import OpenTelemetry

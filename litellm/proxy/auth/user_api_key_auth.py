@@ -51,6 +51,7 @@ from litellm._service_logger import ServiceLogging
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import (
     _cache_key_object,
+    _handle_failed_db_connection_for_get_key_object,
     allowed_routes_check,
     can_key_call_model,
     common_checks,
@@ -561,6 +562,7 @@ async def user_api_key_auth(  # noqa: PLR0915
                     user_id=user_id,
                     org_id=org_id,
                     parent_otel_span=parent_otel_span,
+                    end_user_id=end_user_id,
                 )
         #### ELSE ####
         ## CHECK PASS-THROUGH ENDPOINTS ##
@@ -802,7 +804,9 @@ async def user_api_key_auth(  # noqa: PLR0915
         if (
             prisma_client is None
         ):  # if both master key + user key submitted, and user key != master key, and no db connected, raise an error
-            raise Exception("No connected db.")
+            return await _handle_failed_db_connection_for_get_key_object(
+                e=Exception("No connected db.")
+            )
 
         ## check for cache hit (In-Memory Cache)
         _user_role = None
@@ -1370,15 +1374,27 @@ def _get_user_role(
 
 def get_api_key_from_custom_header(
     request: Request, custom_litellm_key_header_name: str
-):
+) -> str:
+    """
+    Get API key from custom header
+
+    Args:
+        request (Request): Request object
+        custom_litellm_key_header_name (str): Custom header name
+
+    Returns:
+        Optional[str]: API key
+    """
+    api_key: str = ""
     # use this as the virtual key passed to litellm proxy
     custom_litellm_key_header_name = custom_litellm_key_header_name.lower()
+    _headers = {k.lower(): v for k, v in request.headers.items()}
     verbose_proxy_logger.debug(
         "searching for custom_litellm_key_header_name= %s, in headers=%s",
         custom_litellm_key_header_name,
-        request.headers,
+        _headers,
     )
-    custom_api_key = request.headers.get(custom_litellm_key_header_name)
+    custom_api_key = _headers.get(custom_litellm_key_header_name)
     if custom_api_key:
         api_key = _get_bearer_token(api_key=custom_api_key)
         verbose_proxy_logger.debug(
@@ -1387,7 +1403,7 @@ def get_api_key_from_custom_header(
             )
         )
     else:
-        raise ValueError(
+        verbose_proxy_logger.exception(
             f"No LiteLLM Virtual Key pass. Please set header={custom_litellm_key_header_name}: Bearer <api_key>"
         )
     return api_key
