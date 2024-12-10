@@ -220,7 +220,7 @@ def test_all_model_configs():
         optional_params={},
     ) == {"max_tokens": 10}
 
-    from litellm.llms.AI21.chat import AI21ChatConfig
+    from litellm.llms.ai21.chat import AI21ChatConfig
 
     assert "max_completion_tokens" in AI21ChatConfig().get_supported_openai_params(
         "jamba-1.5-mini@001"
@@ -231,7 +231,7 @@ def test_all_model_configs():
         optional_params={},
     ) == {"max_tokens": 10}
 
-    from litellm.llms.AzureOpenAI.chat.gpt_transformation import AzureOpenAIConfig
+    from litellm.llms.azure.chat.gpt_transformation import AzureOpenAIConfig
 
     assert "max_completion_tokens" in AzureOpenAIConfig().get_supported_openai_params()
     assert AzureOpenAIConfig().map_openai_params(
@@ -309,12 +309,16 @@ def test_all_model_configs():
 
     assert (
         "max_completion_tokens"
-        in VertexAIAnthropicConfig().get_supported_openai_params()
+        in VertexAIAnthropicConfig().get_supported_openai_params(
+            model="claude-3-5-sonnet-20240620"
+        )
     )
 
     assert VertexAIAnthropicConfig().map_openai_params(
         non_default_params={"max_completion_tokens": 10},
         optional_params={},
+        model="claude-3-5-sonnet-20240620",
+        drop_params=False,
     ) == {"max_tokens": 10}
 
     from litellm.llms.vertex_ai_and_google_ai_studio.gemini.vertex_and_google_ai_studio_gemini import (
