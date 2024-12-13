@@ -2,6 +2,9 @@ ROUTER_MAX_FALLBACKS = 5
 DEFAULT_BATCH_SIZE = 512
 DEFAULT_FLUSH_INTERVAL_SECONDS = 5
 DEFAULT_MAX_RETRIES = 2
+DEFAULT_IMAGE_TOKEN_COUNT = 250
+DEFAULT_IMAGE_WIDTH = 300
+DEFAULT_IMAGE_HEIGHT = 300
 LITELLM_CHAT_PROVIDERS = [
     "openai",
     "openai_like",
@@ -12,13 +15,13 @@ LITELLM_CHAT_PROVIDERS = [
     "cohere_chat",
     "clarifai",
     "anthropic",
+    "anthropic_text",
     "replicate",
     "huggingface",
     "together_ai",
     "openrouter",
     "vertex_ai",
     "vertex_ai_beta",
-    "palm",
     "gemini",
     "ai21",
     "baseten",
@@ -36,7 +39,6 @@ LITELLM_CHAT_PROVIDERS = [
     "ollama_chat",
     "deepinfra",
     "perplexity",
-    "anyscale",
     "mistral",
     "groq",
     "nvidia_nim",
@@ -48,9 +50,7 @@ LITELLM_CHAT_PROVIDERS = [
     "deepseek",
     "sambanova",
     "maritalk",
-    "voyage",
     "cloudflare",
-    "xinference",
     "fireworks_ai",
     "friendliai",
     "watsonx",
@@ -66,3 +66,9 @@ LITELLM_CHAT_PROVIDERS = [
     "lm_studio",
     "galadriel",
 ]
+
+
+########################### LiteLLM Proxy Specific Constants ###########################
+MAX_SPENDLOG_ROWS_TO_QUERY = (
+    1_000_000  # if spendLogs has more than 1M rows, do not query the DB
+)
