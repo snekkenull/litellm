@@ -2969,6 +2969,9 @@ def completion_with_retries(*args, **kwargs):
         )
 
     num_retries = kwargs.pop("num_retries", 3)
+    # reset retries in .completion()
+    kwargs["max_retries"] = 0
+    kwargs["num_retries"] = 0
     retry_strategy: Literal["exponential_backoff_retry", "constant_retry"] = kwargs.pop(
         "retry_strategy", "constant_retry"
     )  # type: ignore
@@ -2999,6 +3002,8 @@ async def acompletion_with_retries(*args, **kwargs):
         )
 
     num_retries = kwargs.pop("num_retries", 3)
+    kwargs["max_retries"] = 0
+    kwargs["num_retries"] = 0
     retry_strategy = kwargs.pop("retry_strategy", "constant_retry")
     original_function = kwargs.pop("original_function", completion)
     if retry_strategy == "exponential_backoff_retry":
@@ -3171,6 +3176,7 @@ def embedding(  # noqa: PLR0915
     proxy_server_request = kwargs.get("proxy_server_request", None)
     aembedding = kwargs.get("aembedding", None)
     extra_headers = kwargs.get("extra_headers", None)
+    headers = kwargs.get("headers", None)
     ### CUSTOM MODEL COST ###
     input_cost_per_token = kwargs.get("input_cost_per_token", None)
     output_cost_per_token = kwargs.get("output_cost_per_token", None)
@@ -3281,9 +3287,6 @@ def embedding(  # noqa: PLR0915
                 "azure_ad_token", None
             ) or get_secret_str("AZURE_AD_TOKEN")
 
-            if extra_headers is not None:
-                optional_params["extra_headers"] = extra_headers
-
             api_key = (
                 api_key
                 or litellm.api_key
@@ -3311,6 +3314,7 @@ def embedding(  # noqa: PLR0915
                 client=client,
                 aembedding=aembedding,
                 max_retries=max_retries,
+                headers=headers or extra_headers,
             )
         elif (
             model in litellm.open_ai_embedding_models

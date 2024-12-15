@@ -13,7 +13,6 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 import litellm
 import litellm.types
 import litellm.types.llms
-import litellm.types.llms.vertex_ai
 from litellm import verbose_logger
 from litellm.llms.custom_httpx.http_handler import HTTPHandler
 from litellm.types.completion import (
@@ -38,9 +37,14 @@ from litellm.types.llms.openai import (
     ChatCompletionToolCallFunctionChunk,
     ChatCompletionToolMessage,
     ChatCompletionUserMessage,
+    OpenAIMessageContentListBlock,
 )
+from litellm.types.llms.vertex_ai import FunctionCall as VertexFunctionCall
+from litellm.types.llms.vertex_ai import FunctionResponse as VertexFunctionResponse
+from litellm.types.llms.vertex_ai import PartType as VertexPartType
 from litellm.types.utils import GenericImageParsingChunk
 
+from .common_utils import convert_content_list_to_str, is_non_content_values_set
 from .image_handling import async_convert_url_to_base64, convert_url_to_base64
 
 
@@ -61,14 +65,15 @@ DEFAULT_USER_CONTINUE_MESSAGE = {
 }  # similar to autogen. Only used if `litellm.modify_params=True`.
 
 # used to interweave assistant messages, to ensure user/assistant alternating
-DEFAULT_ASSISTANT_CONTINUE_MESSAGE = {
-    "role": "assistant",
-    "content": [
+DEFAULT_ASSISTANT_CONTINUE_MESSAGE = ChatCompletionAssistantMessage(
+    role="assistant",
+    content=[
         {
+            "type": "text",
             "text": "Please continue.",
         }
     ],
-}  # similar to autogen. Only used if `litellm.modify_params=True`.
+)  # similar to autogen. Only used if `litellm.modify_params=True`.
 
 
 def map_system_message_pt(messages: list) -> list:
@@ -962,11 +967,11 @@ def infer_protocol_value(
 
 def _gemini_tool_call_invoke_helper(
     function_call_params: ChatCompletionToolCallFunctionChunk,
-) -> Optional[litellm.types.llms.vertex_ai.FunctionCall]:
+) -> Optional[VertexFunctionCall]:
     name = function_call_params.get("name", "") or ""
     arguments = function_call_params.get("arguments", "")
     arguments_dict = json.loads(arguments)
-    function_call = litellm.types.llms.vertex_ai.FunctionCall(
+    function_call = VertexFunctionCall(
         name=name,
         args=arguments_dict,
     )
@@ -975,7 +980,7 @@ def _gemini_tool_call_invoke_helper(
 
 def convert_to_gemini_tool_call_invoke(
     message: ChatCompletionAssistantMessage,
-) -> List[litellm.types.llms.vertex_ai.PartType]:
+) -> List[VertexPartType]:
     """
     OpenAI tool invokes:
     {
@@ -1016,22 +1021,20 @@ def convert_to_gemini_tool_call_invoke(
     - json.load the arguments
     """
     try:
-        _parts_list: List[litellm.types.llms.vertex_ai.PartType] = []
+        _parts_list: List[VertexPartType] = []
         tool_calls = message.get("tool_calls", None)
         function_call = message.get("function_call", None)
         if tool_calls is not None:
             for tool in tool_calls:
                 if "function" in tool:
-                    gemini_function_call: Optional[
-                        litellm.types.llms.vertex_ai.FunctionCall
-                    ] = _gemini_tool_call_invoke_helper(
-                        function_call_params=tool["function"]
+                    gemini_function_call: Optional[VertexFunctionCall] = (
+                        _gemini_tool_call_invoke_helper(
+                            function_call_params=tool["function"]
+                        )
                     )
                     if gemini_function_call is not None:
                         _parts_list.append(
-                            litellm.types.llms.vertex_ai.PartType(
-                                function_call=gemini_function_call
-                            )
+                            VertexPartType(function_call=gemini_function_call)
                         )
                     else:  # don't silently drop params. Make it clear to user what's happening.
                         raise Exception(
@@ -1044,11 +1047,7 @@ def convert_to_gemini_tool_call_invoke(
                 function_call_params=function_call
             )
             if gemini_function_call is not None:
-                _parts_list.append(
-                    litellm.types.llms.vertex_ai.PartType(
-                        function_call=gemini_function_call
-                    )
-                )
+                _parts_list.append(VertexPartType(function_call=gemini_function_call))
             else:  # don't silently drop params. Make it clear to user what's happening.
                 raise Exception(
                     "function_call missing. Received tool call with 'type': 'function'. No function call in argument - {}".format(
@@ -1067,7 +1066,7 @@ def convert_to_gemini_tool_call_invoke(
 def convert_to_gemini_tool_call_result(
     message: Union[ChatCompletionToolMessage, ChatCompletionFunctionMessage],
     last_message_with_tool_calls: Optional[dict],
-) -> litellm.types.llms.vertex_ai.PartType:
+) -> VertexPartType:
     """
     OpenAI message with a tool result looks like:
     {
@@ -1116,11 +1115,11 @@ def convert_to_gemini_tool_call_result(
 
     # We can't determine from openai message format whether it's a successful or
     # error call result so default to the successful result template
-    _function_response = litellm.types.llms.vertex_ai.FunctionResponse(
+    _function_response = VertexFunctionResponse(
         name=name, response={"content": content_str}  # type: ignore
     )
 
-    _part = litellm.types.llms.vertex_ai.PartType(function_response=_function_response)
+    _part = VertexPartType(function_response=_function_response)
 
     return _part
 
@@ -2404,7 +2403,9 @@ def _convert_to_bedrock_tool_call_result(
 
 def _insert_assistant_continue_message(
     messages: List[BedrockMessageBlock],
-    assistant_continue_message: Optional[str] = None,
+    assistant_continue_message: Optional[
+        Union[str, ChatCompletionAssistantMessage]
+    ] = None,
 ) -> List[BedrockMessageBlock]:
     """
     Add dummy message between user/tool result blocks.
@@ -2412,23 +2413,248 @@ def _insert_assistant_continue_message(
     Conversation blocks and tool result blocks cannot be provided in the same turn. Issue: https://github.com/BerriAI/litellm/issues/6053
     """
     if assistant_continue_message is not None:
+        if isinstance(assistant_continue_message, str):
+            messages.append(
+                BedrockMessageBlock(
+                    role="assistant",
+                    content=[BedrockContentBlock(text=assistant_continue_message)],
+                )
+            )
+        elif isinstance(assistant_continue_message, dict):
+            text = convert_content_list_to_str(assistant_continue_message)
+            messages.append(
+                BedrockMessageBlock(
+                    role="assistant",
+                    content=[BedrockContentBlock(text=text)],
+                )
+            )
+    elif litellm.modify_params:
+        text = convert_content_list_to_str(
+            cast(ChatCompletionAssistantMessage, DEFAULT_ASSISTANT_CONTINUE_MESSAGE)
+        )
         messages.append(
             BedrockMessageBlock(
                 role="assistant",
-                content=[BedrockContentBlock(text=assistant_continue_message)],
+                content=[
+                    BedrockContentBlock(text=text),
+                ],
             )
         )
-    elif litellm.modify_params:
-        messages.append(BedrockMessageBlock(**DEFAULT_ASSISTANT_CONTINUE_MESSAGE))  # type: ignore
     return messages
+
+
+def get_user_message_block_or_continue_message(
+    message: ChatCompletionUserMessage,
+    user_continue_message: Optional[ChatCompletionUserMessage] = None,
+) -> ChatCompletionUserMessage:
+    """
+    Returns the user content block
+    if content block is an empty string, then return the default continue message
+
+    Relevant Issue: https://github.com/BerriAI/litellm/issues/7169
+    """
+    content_block = message.get("content", None)
+
+    # Handle None case
+    if content_block is None or (
+        user_continue_message is None and litellm.modify_params is False
+    ):
+        return message
+
+    # Handle string case
+    if isinstance(content_block, str):
+        # check if content is empty
+        if content_block.strip():
+            return message
+        else:
+            return ChatCompletionUserMessage(
+                **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
+            )
+
+    # Handle list case
+    if isinstance(content_block, list):
+        """
+        CHECK FOR
+            "content": [
+                {
+                "type": "text",
+                "text": ""
+                }
+            ],
+        """
+        if not content_block:
+            return ChatCompletionUserMessage(
+                **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
+            )
+        # Create a copy of the message to avoid modifying the original
+        modified_content_block = content_block.copy()
+
+        for item in modified_content_block:
+            # Check if the list is empty
+            if item["type"] == "text":
+
+                if not item["text"].strip():
+                    # Replace empty text with continue message
+                    _user_continue_message = ChatCompletionUserMessage(
+                        **(user_continue_message or DEFAULT_USER_CONTINUE_MESSAGE)  # type: ignore
+                    )
+                    text = convert_content_list_to_str(_user_continue_message)
+                    item["text"] = text
+                    break
+        modified_message = message.copy()
+        modified_message["content"] = modified_content_block
+        return modified_message
+
+    # Handle unsupported type
+    raise ValueError(f"Unsupported content type: {type(content_block)}")
+
+
+def return_assistant_continue_message(
+    assistant_continue_message: Optional[
+        Union[str, ChatCompletionAssistantMessage]
+    ] = None
+) -> ChatCompletionAssistantMessage:
+    if assistant_continue_message and isinstance(assistant_continue_message, str):
+        return ChatCompletionAssistantMessage(
+            role="assistant",
+            content=assistant_continue_message,
+        )
+    elif assistant_continue_message and isinstance(assistant_continue_message, dict):
+        return ChatCompletionAssistantMessage(**assistant_continue_message)
+    else:
+        return DEFAULT_ASSISTANT_CONTINUE_MESSAGE
+
+
+def skip_empty_text_blocks(
+    message: ChatCompletionAssistantMessage,
+) -> ChatCompletionAssistantMessage:
+    """
+    Skips empty text blocks in message content text blocks.
+
+    Do not insert content here. This is a helper function, which can also be used in base case.
+    """
+    content_block = message.get("content", None)
+    if content_block is None:
+        return message
+    if (
+        isinstance(content_block, str)
+        and not content_block.strip()
+        and is_non_content_values_set(message)
+    ):
+        modified_message = message.copy()
+        modified_message["content"] = None
+        return modified_message
+    elif isinstance(content_block, list):
+        modified_content_block = [
+            item
+            for item in content_block
+            if not (item["type"] == "text" and not item["text"].strip())
+        ]
+        modified_message = message.copy()
+        modified_message["content"] = modified_content_block
+        return modified_message
+
+    return message
+
+
+def process_empty_text_blocks(
+    message: ChatCompletionAssistantMessage,
+    assistant_continue_message: Optional[
+        Union[str, ChatCompletionAssistantMessage]
+    ] = None,
+) -> ChatCompletionAssistantMessage:
+    modified_content_block = message.get("content", None)
+    ## BASE CASE ##
+    if modified_content_block is None or not isinstance(modified_content_block, list):
+        return message
+
+    # Check if all items are empty text blocks
+    if all(
+        item["type"] == "text" and not item["text"].strip()
+        for item in modified_content_block
+    ):
+        # Replace with a single continue message
+        _assistant_continue_message = return_assistant_continue_message(
+            assistant_continue_message
+        )
+        modified_content_block = [
+            {
+                "type": "text",
+                "text": convert_content_list_to_str(_assistant_continue_message),
+            }
+        ]
+    else:
+        # Filter out only empty text blocks, keeping non-empty text and other block types
+        modified_content_block = [
+            item
+            for item in modified_content_block
+            if not (item["type"] == "text" and not item["text"].strip())
+        ]
+
+    modified_message = message.copy()
+    modified_message["content"] = modified_content_block
+    return modified_message
+
+
+def get_assistant_message_block_or_continue_message(
+    message: ChatCompletionAssistantMessage,
+    assistant_continue_message: Optional[
+        Union[str, ChatCompletionAssistantMessage]
+    ] = None,
+) -> ChatCompletionAssistantMessage:
+    """
+    Returns the user content block
+    if content block is an empty string, then return the default continue message
+
+    Relevant Issue: https://github.com/BerriAI/litellm/issues/7169
+    """
+    content_block = message.get("content", None)
+
+    # Handle Base case
+    if content_block is None or (
+        assistant_continue_message is None and litellm.modify_params is False
+    ):
+        return skip_empty_text_blocks(message=message)
+
+    # Handle string case
+    if isinstance(content_block, str):
+        # check if content is empty
+        if content_block.strip():
+            return message
+        else:
+            if is_non_content_values_set(message):
+                modified_message = message.copy()
+                modified_message["content"] = None
+                return modified_message
+            return return_assistant_continue_message(assistant_continue_message)
+
+    # Handle list case
+    if isinstance(content_block, list):
+        """
+        CHECK FOR
+            "content": [
+                {
+                "type": "text",
+                "text": ""
+                }
+            ],
+        """
+        return process_empty_text_blocks(
+            message=message, assistant_continue_message=assistant_continue_message
+        )
+
+    # Handle unsupported type
+    raise ValueError(f"Unsupported content type: {type(content_block)}")
 
 
 def _bedrock_converse_messages_pt(  # noqa: PLR0915
     messages: List,
     model: str,
     llm_provider: str,
-    user_continue_message: Optional[dict] = None,
-    assistant_continue_message: Optional[str] = None,
+    user_continue_message: Optional[ChatCompletionUserMessage] = None,
+    assistant_continue_message: Optional[
+        Union[str, ChatCompletionAssistantMessage]
+    ] = None,
 ) -> List[BedrockMessageBlock]:
     """
     Converts given messages from OpenAI format to Bedrock format
@@ -2469,9 +2695,13 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
         init_msg_i = msg_i
         ## MERGE CONSECUTIVE USER CONTENT ##
         while msg_i < len(messages) and messages[msg_i]["role"] == "user":
-            if isinstance(messages[msg_i]["content"], list):
+            message_block = get_user_message_block_or_continue_message(
+                message=messages[msg_i],
+                user_continue_message=user_continue_message,
+            )
+            if isinstance(message_block["content"], list):
                 _parts: List[BedrockContentBlock] = []
-                for element in messages[msg_i]["content"]:
+                for element in message_block["content"]:
                     if isinstance(element, dict):
                         if element["type"] == "text":
                             _part = BedrockContentBlock(text=element["text"])
@@ -2487,17 +2717,20 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
                             _parts.append(_part)  # type: ignore
                         _cache_point_block = (
                             litellm.AmazonConverseConfig()._get_cache_point_block(
-                                element, block_type="content_block"
+                                message_block=cast(
+                                    OpenAIMessageContentListBlock, element
+                                ),
+                                block_type="content_block",
                             )
                         )
                         if _cache_point_block is not None:
                             _parts.append(_cache_point_block)
                 user_content.extend(_parts)
-            else:
+            elif message_block["content"] and isinstance(message_block["content"], str):
                 _part = BedrockContentBlock(text=messages[msg_i]["content"])
                 _cache_point_block = (
                     litellm.AmazonConverseConfig()._get_cache_point_block(
-                        messages[msg_i], block_type="content_block"
+                        message_block, block_type="content_block"
                     )
                 )
                 user_content.append(_part)
@@ -2559,11 +2792,15 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
         assistant_content: List[BedrockContentBlock] = []
         ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
         while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
-            if messages[msg_i].get("content", None) is not None and isinstance(
-                messages[msg_i]["content"], list
-            ):
+            assistant_message_block = get_assistant_message_block_or_continue_message(
+                message=messages[msg_i],
+                assistant_continue_message=assistant_continue_message,
+            )
+            _assistant_content = assistant_message_block.get("content", None)
+
+            if _assistant_content is not None and isinstance(_assistant_content, list):
                 assistants_parts: List[BedrockContentBlock] = []
-                for element in messages[msg_i]["content"]:
+                for element in _assistant_content:
                     if isinstance(element, dict):
                         if element["type"] == "text":
                             assistants_part = BedrockContentBlock(text=element["text"])
@@ -2578,19 +2815,12 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
                             )
                             assistants_parts.append(assistants_part)
                 assistant_content.extend(assistants_parts)
-            elif messages[msg_i].get("content", None) is not None and isinstance(
-                messages[msg_i]["content"], str
-            ):
-                assistant_text = (
-                    messages[msg_i].get("content") or ""
-                )  # either string or none
-                if assistant_text:
-                    assistant_content.append(BedrockContentBlock(text=assistant_text))
-            if messages[msg_i].get(
-                "tool_calls", []
-            ):  # support assistant tool invoke convertion [TODO]:
+            elif _assistant_content is not None and isinstance(_assistant_content, str):
+                assistant_content.append(BedrockContentBlock(text=_assistant_content))
+            _tool_calls = assistant_message_block.get("tool_calls", [])
+            if _tool_calls:
                 assistant_content.extend(
-                    _convert_to_bedrock_tool_call_invoke(messages[msg_i]["tool_calls"])
+                    _convert_to_bedrock_tool_call_invoke(_tool_calls)
                 )
 
             msg_i += 1

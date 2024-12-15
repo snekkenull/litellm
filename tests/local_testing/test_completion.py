@@ -3094,6 +3094,7 @@ def test_completion_azure_deployment_id():
 import asyncio
 
 
+@pytest.mark.skip(reason="replicate endpoints are extremely flaky")
 @pytest.mark.parametrize("sync_mode", [False, True])
 @pytest.mark.asyncio
 async def test_completion_replicate_llama3(sync_mode):
@@ -3976,10 +3977,11 @@ def test_completion_deepseek():
 
 
 @pytest.mark.skip(reason="Account deleted by IBM.")
-def test_completion_watsonx():
+def test_completion_watsonx_error():
     litellm.set_verbose = True
     model_name = "watsonx/ibm/granite-13b-chat-v2"
-    try:
+
+    with pytest.raises(litellm.BadRequestError) as e:
         response = completion(
             model=model_name,
             messages=messages,
@@ -3988,12 +3990,8 @@ def test_completion_watsonx():
         )
         # Add any assertions here to check the response
         print(response)
-    except litellm.APIError as e:
-        pass
-    except litellm.RateLimitError as e:
-        pass
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
+
+    assert "use 'watsonx_text' route instead" in str(e).lower()
 
 
 @pytest.mark.skip(reason="Skip test. account deleted.")
