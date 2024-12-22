@@ -60,7 +60,7 @@ VERTEX_MODELS_TO_NOT_TEST = [
     "gemini-1.5-flash-exp-0827",
     "gemini-pro-flash",
     "gemini-1.5-flash-exp-0827",
-    "gemini-2.0-flash-exp"
+    "gemini-2.0-flash-exp",
 ]
 
 
@@ -210,7 +210,7 @@ async def test_get_router_response():
 #     reason="Local test. Vertex AI Quota is low. Leads to rate limit errors on ci/cd."
 # )
 # @pytest.mark.flaky(retries=3, delay=1)
-def test_vertex_ai_anthropic():
+def test_aavertex_ai_anthropic():
     model = "claude-3-sonnet@20240229"
 
     vertex_ai_project = "adroit-crow-413218"
@@ -308,7 +308,7 @@ async def test_vertex_ai_anthropic_async():
 # )
 @pytest.mark.asyncio
 @pytest.mark.flaky(retries=3, delay=1)
-async def test_vertex_ai_anthropic_async_streaming():
+async def test_aaavertex_ai_anthropic_async_streaming():
     # load_vertex_ai_credentials()
     try:
         litellm.set_verbose = True
@@ -343,7 +343,7 @@ async def test_vertex_ai_anthropic_async_streaming():
 
 
 @pytest.mark.flaky(retries=3, delay=1)
-def test_vertex_ai():
+def test_avertex_ai():
     import random
 
     litellm.num_retries = 3
@@ -394,7 +394,7 @@ def test_vertex_ai():
 
 
 @pytest.mark.flaky(retries=3, delay=1)
-def test_vertex_ai_stream():
+def test_avertex_ai_stream():
     load_vertex_ai_credentials()
     litellm.set_verbose = True
     litellm.vertex_project = "adroit-crow-413218"
