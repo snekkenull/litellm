@@ -110,10 +110,12 @@ from litellm.router_utils.get_retry_from_policy import (
 from litellm.secret_managers.main import get_secret
 from litellm.types.llms.openai import (
     AllMessageValues,
+    AllPromptValues,
     ChatCompletionAssistantToolCall,
     ChatCompletionNamedToolChoiceParam,
     ChatCompletionToolParam,
     ChatCompletionToolParamFunctionChunk,
+    OpenAITextCompletionUserMessage,
 )
 from litellm.types.rerank import RerankResponse
 from litellm.types.utils import FileTypes  # type: ignore
@@ -169,7 +171,11 @@ from typing import (
 
 from openai import OpenAIError as OriginalError
 
+from litellm.llms.base_llm.audio_transcription.transformation import (
+    BaseAudioTranscriptionConfig,
+)
 from litellm.llms.base_llm.chat.transformation import BaseConfig
+from litellm.llms.base_llm.completion.transformation import BaseTextCompletionConfig
 from litellm.llms.base_llm.embedding.transformation import BaseEmbeddingConfig
 from litellm.llms.base_llm.rerank.transformation import BaseRerankConfig
 
@@ -1203,11 +1209,18 @@ def client(original_function):  # noqa: PLR0915
         return wrapper
 
 
-def _is_async_request(kwargs: Optional[dict]) -> bool:
+def _is_async_request(
+    kwargs: Optional[dict],
+    is_pass_through: bool = False,
+) -> bool:
     """
     Returns True if the call type is an internal async request.
 
     eg. litellm.acompletion, litellm.aimage_generation, litellm.acreate_batch, litellm._arealtime
+
+    Args:
+        kwargs (dict): The kwargs passed to the litellm function
+        is_pass_through (bool): Whether the call is a pass-through call. By default all pass through calls are async.
     """
     if kwargs is None:
         return False
@@ -1221,6 +1234,8 @@ def _is_async_request(kwargs: Optional[dict]) -> bool:
         or kwargs.get("arerank", False) is True
         or kwargs.get("_arealtime", False) is True
         or kwargs.get("acreate_batch", False) is True
+        or kwargs.get("acreate_fine_tuning_job", False) is True
+        or is_pass_through is True
     ):
         return True
     return False
@@ -1650,7 +1665,9 @@ def supports_system_messages(model: str, custom_llm_provider: Optional[str]) -> 
     )
 
 
-def supports_response_schema(model: str, custom_llm_provider: Optional[str]) -> bool:
+def supports_response_schema(
+    model: str, custom_llm_provider: Optional[str] = None
+) -> bool:
     """
     Check if the given model + provider supports 'response_schema' as a param.
 
@@ -1815,6 +1832,19 @@ def supports_vision(model: str, custom_llm_provider: Optional[str] = None) -> bo
         return False
 
 
+def supports_embedding_image_input(
+    model: str, custom_llm_provider: Optional[str] = None
+) -> bool:
+    """
+    Check if the given model supports embedding image input and return a boolean value.
+    """
+    return _supports_factory(
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+        key="supports_embedding_image_input",
+    )
+
+
 def supports_parallel_function_calling(model: str):
     """
     Check if the given model supports parallel function calling and return True if it does, False otherwise.
@@ -1927,7 +1957,7 @@ def register_model(model_cost: Union[str, dict]):  # noqa: PLR0915
 
 
 def get_litellm_params(
-    api_key=None,
+    api_key: Optional[str] = None,
     force_timeout=600,
     azure=False,
     logger_fn=None,
@@ -1935,12 +1965,12 @@ def get_litellm_params(
     hugging_face=False,
     replicate=False,
     together_ai=False,
-    custom_llm_provider=None,
-    api_base=None,
+    custom_llm_provider: Optional[str] = None,
+    api_base: Optional[str] = None,
     litellm_call_id=None,
     model_alias_map=None,
     completion_call_id=None,
-    metadata=None,
+    metadata: Optional[dict] = None,
     model_info=None,
     proxy_server_request=None,
     acompletion=None,
@@ -1954,10 +1984,11 @@ def get_litellm_params(
     text_completion=None,
     azure_ad_token_provider=None,
     user_continue_message=None,
-    base_model=None,
-    litellm_trace_id=None,
+    base_model: Optional[str] = None,
+    litellm_trace_id: Optional[str] = None,
     hf_model_name: Optional[str] = None,
     custom_prompt_dict: Optional[dict] = None,
+    litellm_metadata: Optional[dict] = None,
 ):
     litellm_params = {
         "acompletion": acompletion,
@@ -1989,8 +2020,8 @@ def get_litellm_params(
         "litellm_trace_id": litellm_trace_id,
         "hf_model_name": hf_model_name,
         "custom_prompt_dict": custom_prompt_dict,
+        "litellm_metadata": litellm_metadata,
     }
-
     return litellm_params
 
 
@@ -2070,12 +2101,28 @@ def get_optional_params_transcription(
                     )
             return non_default_params
 
+    provider_config: Optional[BaseAudioTranscriptionConfig] = None
+    if custom_llm_provider is not None:
+        provider_config = ProviderConfigManager.get_provider_audio_transcription_config(
+            model=model,
+            provider=LlmProviders(custom_llm_provider),
+        )
+
     if custom_llm_provider == "openai" or custom_llm_provider == "azure":
         optional_params = non_default_params
     elif custom_llm_provider == "groq":
         supported_params = litellm.GroqSTTConfig().get_supported_openai_params_stt()
         _check_valid_arg(supported_params=supported_params)
         optional_params = litellm.GroqSTTConfig().map_openai_params_stt(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+            drop_params=drop_params if drop_params is not None else False,
+        )
+    elif provider_config is not None:  # handles fireworks ai, and any future providers
+        supported_params = provider_config.get_supported_openai_params(model=model)
+        _check_valid_arg(supported_params=supported_params)
+        optional_params = provider_config.map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,
             model=model,
@@ -4421,6 +4468,9 @@ def _get_model_info_helper(  # noqa: PLR0915
                 supports_audio_input=_model_info.get("supports_audio_input", False),
                 supports_audio_output=_model_info.get("supports_audio_output", False),
                 supports_pdf_input=_model_info.get("supports_pdf_input", False),
+                supports_embedding_image_input=_model_info.get(
+                    "supports_embedding_image_input", False
+                ),
                 tpm=_model_info.get("tpm", None),
                 rpm=_model_info.get("rpm", None),
             )
@@ -5989,6 +6039,15 @@ def is_base64_encoded(s: str) -> bool:
         return False
 
 
+def get_base64_str(s: str) -> str:
+    """
+    s: b64str OR data:image/png;base64,b64str
+    """
+    if "," in s:
+        return s.split(",")[1]
+    return s
+
+
 def has_tool_call_blocks(messages: List[AllMessageValues]) -> bool:
     """
     Returns true, if messages has tool call blocks.
@@ -6256,6 +6315,26 @@ class ProviderConfigManager:
         elif litellm.LlmProviders.INFINITY == provider:
             return litellm.InfinityRerankConfig()
         return litellm.CohereRerankConfig()
+
+    @staticmethod
+    def get_provider_audio_transcription_config(
+        model: str,
+        provider: LlmProviders,
+    ) -> Optional[BaseAudioTranscriptionConfig]:
+        if litellm.LlmProviders.FIREWORKS_AI == provider:
+            return litellm.FireworksAIAudioTranscriptionConfig()
+        return None
+
+    @staticmethod
+    def get_provider_text_completion_config(
+        model: str,
+        provider: LlmProviders,
+    ) -> BaseTextCompletionConfig:
+        if LlmProviders.FIREWORKS_AI == provider:
+            return litellm.FireworksAITextCompletionConfig()
+        elif LlmProviders.TOGETHER_AI == provider:
+            return litellm.TogetherAITextCompletionConfig()
+        return litellm.OpenAITextCompletionConfig()
 
 
 def get_end_user_id_for_cost_tracking(

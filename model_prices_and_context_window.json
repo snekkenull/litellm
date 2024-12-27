@@ -132,6 +132,22 @@
         "supports_audio_output": true,
         "supports_system_messages": true
     },
+    "gpt-4o-audio-preview-2024-12-17": {
+        "max_tokens": 16384,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16384,
+        "input_cost_per_token": 0.0000025,
+        "input_cost_per_audio_token": 0.00004,
+        "output_cost_per_token": 0.000010,
+        "output_cost_per_audio_token": 0.00008,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true,
+        "supports_system_messages": true
+    },
     "gpt-4o-audio-preview-2024-10-01": {
         "max_tokens": 16384,
         "max_input_tokens": 128000,
@@ -1944,6 +1960,8 @@
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000014,
         "input_cost_per_token_cache_hit": 0.000000014,
+        "cache_read_input_token_cost": 0.000000014,
+        "cache_creation_input_token_cost": 0.0,
         "output_cost_per_token": 0.00000028,
         "litellm_provider": "deepseek",
         "mode": "chat",
@@ -2101,7 +2119,8 @@
         "litellm_provider": "groq",
         "mode": "chat",
         "supports_function_calling": true,
-        "supports_response_schema": true
+        "supports_response_schema": true,
+        "supports_vision": true
     },
     "groq/llama-3.2-90b-text-preview": {
         "max_tokens": 8192,
@@ -2123,7 +2142,8 @@
         "litellm_provider": "groq",
         "mode": "chat",
         "supports_function_calling": true,
-        "supports_response_schema": true
+        "supports_response_schema": true,
+        "supports_vision": true
     },
     "groq/llama3-70b-8192": {
         "max_tokens": 8192,
@@ -3758,6 +3778,8 @@
         "max_audio_length_hours": 8.4,
         "max_audio_per_prompt": 1,
         "max_pdf_size_mb": 30, 
+        "cache_read_input_token_cost": 0.00000001875,
+        "cache_creation_input_token_cost": 0.000001,
         "input_cost_per_token": 0.000000075,
         "input_cost_per_token_above_128k_tokens": 0.00000015,
         "output_cost_per_token": 0.0000003,
@@ -3783,6 +3805,8 @@
         "max_audio_length_hours": 8.4,
         "max_audio_per_prompt": 1,
         "max_pdf_size_mb": 30, 
+        "cache_read_input_token_cost": 0.00000001875,
+        "cache_creation_input_token_cost": 0.000001,
         "input_cost_per_token": 0.000000075,
         "input_cost_per_token_above_128k_tokens": 0.00000015,
         "output_cost_per_token": 0.0000003,
@@ -3842,6 +3866,7 @@
         "supports_function_calling": true,
         "supports_vision": true,
         "supports_response_schema": true,
+        "supports_prompt_caching": true,
         "tpm": 4000000,
         "rpm": 2000,
         "source": "https://ai.google.dev/pricing"
@@ -3866,6 +3891,7 @@
         "supports_function_calling": true,
         "supports_vision": true,
         "supports_response_schema": true,
+        "supports_prompt_caching": true,
         "tpm": 4000000,
         "rpm": 4000,
         "source": "https://ai.google.dev/pricing"
@@ -3890,6 +3916,7 @@
         "supports_function_calling": true,
         "supports_vision": true,
         "supports_response_schema": true,
+        "supports_prompt_caching": true,
         "tpm": 4000000,
         "rpm": 4000,
         "source": "https://ai.google.dev/pricing"
@@ -4337,7 +4364,11 @@
         "output_cost_per_token": 0.00000,
         "litellm_provider": "cohere",
         "mode": "embedding",
-        "supports_image_input": true
+        "supports_image_input": true,
+        "supports_embedding_image_input": true,
+        "metadata": {
+            "notes": "'supports_image_input' is a deprecated field. Use 'supports_embedding_image_input' instead."
+        }
     },
     "replicate/meta/llama-2-13b": {
         "max_tokens": 4096,
@@ -5085,8 +5116,12 @@
         "output_cost_per_token": 0.0,
         "litellm_provider": "bedrock", 
         "supports_image_input": true,
+        "supports_embedding_image_input": true,
         "mode": "embedding",
-        "source": "https://us-east-1.console.aws.amazon.com/bedrock/home?region=us-east-1#/providers?model=amazon.titan-image-generator-v1"
+        "source": "https://us-east-1.console.aws.amazon.com/bedrock/home?region=us-east-1#/providers?model=amazon.titan-image-generator-v1",
+        "metadata": {
+            "notes": "'supports_image_input' is a deprecated field. Use 'supports_embedding_image_input' instead."
+        }
     },
     "mistral.mistral-7b-instruct-v0:2": {
         "max_tokens": 8191,
@@ -6020,7 +6055,7 @@
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000072,
         "output_cost_per_token": 0.00000072,
-        "litellm_provider": "bedrock",
+        "litellm_provider": "bedrock_converse",
         "mode": "chat"
     },
     "meta.llama2-13b-chat-v1": {
