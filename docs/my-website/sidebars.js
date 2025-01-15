@@ -28,9 +28,9 @@ const sidebars = {
         slug: "/simple_proxy",
       },
       items: [
-        "proxy/docker_quick_start", 
+        "proxy/docker_quick_start",
         {
-          "type": "category", 
+          "type": "category",
           "label": "Config.yaml",
           "items": ["proxy/configs", "proxy/config_management", "proxy/config_settings"]
         },
@@ -38,13 +38,13 @@ const sidebars = {
           type: "category",
           label: "Setup & Deployment",
           items: [
-            "proxy/deploy", 
-            "proxy/prod", 
+            "proxy/deploy",
+            "proxy/prod",
             "proxy/cli",
             "proxy/model_management",
             "proxy/health",
             "proxy/debugging",
-            "proxy/pass_through",
+            "proxy/spending_monitoring",
         ],
         },
         "proxy/demo",
@@ -52,7 +52,7 @@ const sidebars = {
           type: "category",
           label: "Architecture",
           items: ["proxy/architecture", "proxy/db_info", "router_architecture", "proxy/user_management_heirarchy"],
-        }, 
+        },
         {
           type: "link",
           label: "All Endpoints (Swagger)",
@@ -64,16 +64,17 @@ const sidebars = {
           label: "Making LLM Requests",
           items: [
             "proxy/user_keys",
-            "proxy/response_headers", 
+            "proxy/clientside_auth",
+            "proxy/response_headers",
           ],
         },
         {
           type: "category",
           label: "Authentication",
           items: [
-            "proxy/virtual_keys", 
-            "proxy/token_auth", 
-            "proxy/service_accounts", 
+            "proxy/virtual_keys",
+            "proxy/token_auth",
+            "proxy/service_accounts",
             "proxy/access_control",
             "proxy/ip_address",
             "proxy/email",
@@ -82,19 +83,20 @@ const sidebars = {
         },
         {
           type: "category",
-          label: "Admin UI",
+          label: "Model Access",
           items: [
-            "proxy/ui", 
-            "proxy/admin_ui_sso",
-            "proxy/self_serve", 
-            "proxy/custom_sso"
-          ],
+            "proxy/model_access",
+            "proxy/team_model_add"
+          ]
         },
         {
           type: "category",
-          label: "Team Management",
+          label: "Admin UI",
           items: [
-            "proxy/team_model_add"
+            "proxy/ui",
+            "proxy/admin_ui_sso",
+            "proxy/self_serve",
+            "proxy/custom_sso"
           ],
         },
         {
@@ -105,7 +107,7 @@ const sidebars = {
         {
           type: "category",
           label: "Budgets + Rate Limits",
-          items: ["proxy/users", "proxy/rate_limit_tiers", "proxy/team_budgets", "proxy/customers"],
+          items: ["proxy/users", "proxy/temporary_budget_increase", "proxy/rate_limit_tiers", "proxy/team_budgets", "proxy/customers"],
         },
         {
           type: "link",
@@ -115,28 +117,35 @@ const sidebars = {
         {
           type: "category",
           label: "Logging, Alerting, Metrics",
-          items: ["proxy/logging", "proxy/logging_spec", "proxy/team_logging","proxy/alerting", "proxy/prometheus"],
+          items: [
+            "proxy/logging",
+            "proxy/logging_spec",
+            "proxy/team_logging",
+            "proxy/prometheus",
+            "proxy/alerting",
+            "proxy/pagerduty"],
         },
         {
           type: "category",
           label: "[Beta] Guardrails",
           items: [
-            "proxy/guardrails/quick_start", 
-            "proxy/guardrails/aporia_api", 
+            "proxy/guardrails/quick_start",
+            "proxy/guardrails/aim_security",
+            "proxy/guardrails/aporia_api",
+            "proxy/guardrails/bedrock",
             "proxy/guardrails/guardrails_ai",
-            "proxy/guardrails/lakera_ai", 
-            "proxy/guardrails/bedrock",  
-            "proxy/guardrails/pii_masking_v2", 
-            "proxy/guardrails/secret_detection", 
-            "proxy/guardrails/custom_guardrail", 
+            "proxy/guardrails/lakera_ai",
+            "proxy/guardrails/pii_masking_v2",
+            "proxy/guardrails/secret_detection",
+            "proxy/guardrails/custom_guardrail",
             "prompt_injection"
         ],
         },
         {
-          type: "category", 
-          label: "Secret Managers", 
+          type: "category",
+          label: "Secret Managers",
           items: [
-            "secret", 
+            "secret",
             "oidc"
           ]
         },
@@ -146,11 +155,11 @@ const sidebars = {
           description: "Modify requests, responses, and more",
           items: [
             "proxy/call_hooks",
-            "proxy/rules", 
+            "proxy/rules",
           ]
         },
         "proxy/caching",
-        
+
       ]
     },
     {
@@ -164,55 +173,56 @@ const sidebars = {
         slug: "/providers",
       },
       items: [
-        "providers/openai", 
+        "providers/openai",
         "providers/text_completion_openai",
         "providers/openai_compatible",
-        "providers/azure", 
-        "providers/azure_ai", 
-        "providers/vertex", 
-        "providers/gemini", 
-        "providers/anthropic", 
+        "providers/azure",
+        "providers/azure_ai",
+        "providers/vertex",
+        "providers/gemini",
+        "providers/anthropic",
         "providers/aws_sagemaker",
-        "providers/bedrock", 
-        "providers/litellm_proxy", 
-        "providers/mistral", 
+        "providers/bedrock",
+        "providers/litellm_proxy",
+        "providers/mistral",
         "providers/codestral",
-        "providers/cohere", 
+        "providers/cohere",
         "providers/anyscale",
-        "providers/huggingface", 
+        "providers/huggingface",
         "providers/databricks",
+        "providers/deepgram",
         "providers/watsonx",
         "providers/predibase",
-        "providers/nvidia_nim", 
+        "providers/nvidia_nim",
         "providers/xai",
         "providers/lm_studio",
-        "providers/cerebras", 
-        "providers/volcano", 
+        "providers/cerebras",
+        "providers/volcano",
         "providers/triton-inference-server",
-        "providers/ollama", 
-        "providers/perplexity", 
+        "providers/ollama",
+        "providers/perplexity",
         "providers/friendliai",
         "providers/galadriel",
-        "providers/groq", 
-        "providers/github", 
-        "providers/deepseek", 
+        "providers/groq",
+        "providers/github",
+        "providers/deepseek",
         "providers/fireworks_ai",
-        "providers/clarifai", 
-        "providers/vllm", 
+        "providers/clarifai",
+        "providers/vllm",
         "providers/infinity",
-        "providers/xinference", 
-        "providers/cloudflare_workers", 
+        "providers/xinference",
+        "providers/cloudflare_workers",
         "providers/deepinfra",
-        "providers/ai21", 
+        "providers/ai21",
         "providers/nlp_cloud",
-        "providers/replicate", 
-        "providers/togetherai", 
-        "providers/voyage", 
-        "providers/jina_ai", 
-        "providers/aleph_alpha", 
-        "providers/baseten", 
-        "providers/openrouter", 
-        "providers/sambanova", 
+        "providers/replicate",
+        "providers/togetherai",
+        "providers/voyage",
+        "providers/jina_ai",
+        "providers/aleph_alpha",
+        "providers/baseten",
+        "providers/openrouter",
+        "providers/sambanova",
         "providers/custom_llm_server",
         "providers/petals",
       ],
@@ -241,7 +251,7 @@ const sidebars = {
         "completion/mock_requests",
         "completion/reliable_completions",
         'tutorials/litellm_proxy_aporia',
-        
+
       ]
     },
     {
@@ -278,12 +288,14 @@ const sidebars = {
           type: "category",
           label: "Pass-through Endpoints (Anthropic SDK, etc.)",
           items: [
+            "pass_through/intro",
             "pass_through/vertex_ai",
             "pass_through/google_ai_studio",
             "pass_through/cohere",
             "pass_through/anthropic_completion",
             "pass_through/bedrock",
             "pass_through/langfuse",
+            "proxy/pass_through",
           ],
         },
         "rerank",
@@ -327,7 +339,7 @@ const sidebars = {
           type: "category",
           label: "Tutorials",
           items: [
-            
+
             'tutorials/azure_openai',
             'tutorials/instructor',
             "tutorials/gradio_integration",
@@ -351,7 +363,6 @@ const sidebars = {
       label: "Load Testing",
       items: [
         "benchmarks",
-        "load_test",
         "load_test_advanced",
         "load_test_sdk",
         "load_test_rpm",
@@ -361,7 +372,7 @@ const sidebars = {
       type: "category",
       label: "Adding Providers",
       items: [
-        "adding_provider/directory_structure", 
+        "adding_provider/directory_structure",
         "adding_provider/new_rerank_provider"],
     },
     {
@@ -380,6 +391,7 @@ const sidebars = {
         "debugging/local_debugging",
         "observability/raw_request_response",
         "observability/custom_callback",
+        "observability/humanloop",
         "observability/scrub_data",
         "observability/braintrust",
         "observability/sentry",
@@ -397,7 +409,7 @@ const sidebars = {
         "observability/opik_integration",
       ],
     },
-    
+
     {
       type: "category",
       label: "Extras",
@@ -409,7 +421,7 @@ const sidebars = {
         "proxy/pii_masking",
         "extras/code_quality",
         "rules",
-        "proxy/team_based_routing", 
+        "proxy/team_based_routing",
         "proxy/customer_routing",
         "proxy_server",
         {

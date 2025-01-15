@@ -14,7 +14,11 @@ from prometheus_client import REGISTRY, CollectorRegistry
 import litellm
 from litellm import completion
 from litellm._logging import verbose_logger
-from litellm.integrations.prometheus import PrometheusLogger, UserAPIKeyLabelValues
+from litellm.integrations.prometheus import (
+    PrometheusLogger,
+    UserAPIKeyLabelValues,
+    get_custom_labels_from_metadata,
+)
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from litellm.types.utils import (
     StandardLoggingPayload,
@@ -23,7 +27,7 @@ from litellm.types.utils import (
     StandardLoggingModelInformation,
 )
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 from datetime import datetime, timedelta
 from litellm.integrations.prometheus import PrometheusLogger
 from litellm.proxy._types import UserAPIKeyAuth
@@ -108,6 +112,7 @@ async def test_async_log_success_event(prometheus_logger):
     standard_logging_object = create_standard_logging_payload()
     kwargs = {
         "model": "gpt-3.5-turbo",
+        "stream": True,
         "litellm_params": {
             "metadata": {
                 "user_api_key": "test_key",
@@ -190,6 +195,16 @@ def test_increment_token_metrics(prometheus_logger):
     standard_logging_payload["prompt_tokens"] = 50
     standard_logging_payload["completion_tokens"] = 50
 
+    enum_values = UserAPIKeyLabelValues(
+        litellm_model_name=standard_logging_payload["model"],
+        api_provider=standard_logging_payload["custom_llm_provider"],
+        hashed_api_key=standard_logging_payload["metadata"]["user_api_key_hash"],
+        api_key_alias=standard_logging_payload["metadata"]["user_api_key_alias"],
+        team=standard_logging_payload["metadata"]["user_api_key_team_id"],
+        team_alias=standard_logging_payload["metadata"]["user_api_key_team_alias"],
+        **standard_logging_payload,
+    )
+
     prometheus_logger._increment_token_metrics(
         standard_logging_payload,
         end_user_id="user1",
@@ -199,6 +214,7 @@ def test_increment_token_metrics(prometheus_logger):
         user_api_team="team1",
         user_api_team_alias="team_alias1",
         user_id="user1",
+        enum_values=enum_values,
     )
 
     prometheus_logger.litellm_tokens_metric.labels.assert_called_once_with(
@@ -207,14 +223,28 @@ def test_increment_token_metrics(prometheus_logger):
     prometheus_logger.litellm_tokens_metric.labels().inc.assert_called_once_with(100)
 
     prometheus_logger.litellm_input_tokens_metric.labels.assert_called_once_with(
-        "user1", "key1", "alias1", "gpt-3.5-turbo", "team1", "team_alias1", "user1"
+        end_user=None,
+        user=None,
+        hashed_api_key="test_hash",
+        api_key_alias="test_alias",
+        team="test_team",
+        team_alias="test_team_alias",
+        requested_model=None,
+        model="gpt-3.5-turbo",
     )
     prometheus_logger.litellm_input_tokens_metric.labels().inc.assert_called_once_with(
         50
     )
 
     prometheus_logger.litellm_output_tokens_metric.labels.assert_called_once_with(
-        "user1", "key1", "alias1", "gpt-3.5-turbo", "team1", "team_alias1", "user1"
+        end_user=None,
+        user=None,
+        hashed_api_key="test_hash",
+        api_key_alias="test_alias",
+        team="test_team",
+        team_alias="test_team_alias",
+        requested_model=None,
+        model="gpt-3.5-turbo",
     )
     prometheus_logger.litellm_output_tokens_metric.labels().inc.assert_called_once_with(
         50
@@ -269,10 +299,21 @@ def test_set_latency_metrics(prometheus_logger):
     time to first token, llm api latency, and request total latency metrics are set to the values in the standard logging payload
     """
     standard_logging_payload = create_standard_logging_payload()
-    standard_logging_payload["model_parameters"] = {"stream": True}
     prometheus_logger.litellm_llm_api_time_to_first_token_metric = MagicMock()
     prometheus_logger.litellm_llm_api_latency_metric = MagicMock()
     prometheus_logger.litellm_request_total_latency_metric = MagicMock()
+
+    enum_values = UserAPIKeyLabelValues(
+        litellm_model_name=standard_logging_payload["model"],
+        api_provider=standard_logging_payload["custom_llm_provider"],
+        hashed_api_key=standard_logging_payload["metadata"]["user_api_key_hash"],
+        api_key_alias=standard_logging_payload["metadata"]["user_api_key_alias"],
+        team=standard_logging_payload["metadata"]["user_api_key_team_id"],
+        team_alias=standard_logging_payload["metadata"]["user_api_key_team_alias"],
+        requested_model=standard_logging_payload["model_group"],
+        user=standard_logging_payload["metadata"]["user_api_key_user_id"],
+        **standard_logging_payload,
+    )
 
     now = datetime.now()
     kwargs = {
@@ -281,6 +322,7 @@ def test_set_latency_metrics(prometheus_logger):
         "api_call_start_time": now - timedelta(seconds=1.5),  # when the api call starts
         "completion_start_time": now
         - timedelta(seconds=1),  # when the completion starts
+        "stream": True,
     }
 
     prometheus_logger._set_latency_metrics(
@@ -290,7 +332,7 @@ def test_set_latency_metrics(prometheus_logger):
         user_api_key_alias="alias1",
         user_api_team="team1",
         user_api_team_alias="team_alias1",
-        standard_logging_payload=standard_logging_payload,
+        enum_values=enum_values,
     )
 
     # completion_start_time - api_call_start_time
@@ -303,14 +345,14 @@ def test_set_latency_metrics(prometheus_logger):
 
     # end_time - api_call_start_time
     prometheus_logger.litellm_llm_api_latency_metric.labels.assert_called_once_with(
-        model="gpt-3.5-turbo",
-        hashed_api_key="key1",
-        api_key_alias="alias1",
-        team="team1",
-        team_alias="team_alias1",
+        end_user=None,
         user="test_user",
-        end_user="test_end_user",
+        hashed_api_key="test_hash",
+        api_key_alias="test_alias",
+        team="test_team",
+        team_alias="test_team_alias",
         requested_model="openai-gpt",
+        model="gpt-3.5-turbo",
     )
     prometheus_logger.litellm_llm_api_latency_metric.labels().observe.assert_called_once_with(
         1.5
@@ -318,13 +360,13 @@ def test_set_latency_metrics(prometheus_logger):
 
     # total latency for the request
     prometheus_logger.litellm_request_total_latency_metric.labels.assert_called_once_with(
-        end_user="test_end_user",
-        hashed_api_key="key1",
-        api_key_alias="alias1",
-        requested_model="openai-gpt",
-        team="team1",
-        team_alias="team_alias1",
+        end_user=None,
         user="test_user",
+        hashed_api_key="test_hash",
+        api_key_alias="test_alias",
+        team="test_team",
+        team_alias="test_team_alias",
+        requested_model="openai-gpt",
         model="gpt-3.5-turbo",
     )
     prometheus_logger.litellm_request_total_latency_metric.labels().observe.assert_called_once_with(
@@ -849,3 +891,102 @@ def test_prometheus_factory(monkeypatch, disable_end_user_tracking):
         assert returned_dict["end_user"] == None
     else:
         assert returned_dict["end_user"] == "test_end_user"
+
+
+def test_get_custom_labels_from_metadata(monkeypatch):
+    monkeypatch.setattr(
+        "litellm.custom_prometheus_metadata_labels", ["metadata.foo", "metadata.bar"]
+    )
+    metadata = {"foo": "bar", "bar": "baz", "taz": "qux"}
+    assert get_custom_labels_from_metadata(metadata) == {
+        "metadata_foo": "bar",
+        "metadata_bar": "baz",
+    }
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_initialize_remaining_budget_metrics(prometheus_logger):
+    """
+    Test that _initialize_remaining_budget_metrics correctly sets budget metrics for all teams
+    """
+    # Mock the prisma client and get_paginated_teams function
+    with patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma, patch(
+        "litellm.proxy.management_endpoints.team_endpoints.get_paginated_teams"
+    ) as mock_get_teams:
+
+        # Create mock team data
+        mock_teams = [
+            MagicMock(team_id="team1", team_alias="alias1", max_budget=100, spend=30),
+            MagicMock(team_id="team2", team_alias="alias2", max_budget=200, spend=50),
+            MagicMock(team_id="team3", team_alias=None, max_budget=300, spend=100),
+        ]
+
+        # Mock get_paginated_teams to return our test data
+        mock_get_teams.return_value = (mock_teams, len(mock_teams))
+
+        # Mock the Prometheus metric
+        prometheus_logger.litellm_remaining_team_budget_metric = MagicMock()
+
+        # Call the function
+        await prometheus_logger._initialize_remaining_budget_metrics()
+
+        # Verify the metric was set correctly for each team
+        expected_calls = [
+            call.labels("team1", "alias1").set(70),  # 100 - 30
+            call.labels("team2", "alias2").set(150),  # 200 - 50
+            call.labels("team3", "").set(200),  # 300 - 100
+        ]
+
+        prometheus_logger.litellm_remaining_team_budget_metric.assert_has_calls(
+            expected_calls, any_order=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_initialize_remaining_budget_metrics_exception_handling(
+    prometheus_logger,
+):
+    """
+    Test that _initialize_remaining_budget_metrics properly handles exceptions
+    """
+    # Mock the prisma client and get_paginated_teams function to raise an exception
+    with patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma, patch(
+        "litellm.proxy.management_endpoints.team_endpoints.get_paginated_teams"
+    ) as mock_get_teams:
+
+        # Make get_paginated_teams raise an exception
+        mock_get_teams.side_effect = Exception("Database error")
+
+        # Mock the Prometheus metric
+        prometheus_logger.litellm_remaining_team_budget_metric = MagicMock()
+
+        # Mock the logger to capture the error
+        with patch("litellm._logging.verbose_logger.exception") as mock_logger:
+            # Call the function
+            await prometheus_logger._initialize_remaining_budget_metrics()
+
+            # Verify the error was logged
+            mock_logger.assert_called_once()
+            assert (
+                "Error initializing team budget metrics" in mock_logger.call_args[0][0]
+            )
+
+        # Verify the metric was never called
+        prometheus_logger.litellm_remaining_team_budget_metric.assert_not_called()
+
+
+def test_initialize_prometheus_startup_metrics_no_loop(prometheus_logger):
+    """
+    Test that _initialize_prometheus_startup_metrics handles case when no event loop exists
+    """
+    # Mock asyncio.get_running_loop to raise RuntimeError
+    with patch(
+        "asyncio.get_running_loop", side_effect=RuntimeError("No running event loop")
+    ), patch("litellm._logging.verbose_logger.exception") as mock_logger:
+
+        # Call the function
+        prometheus_logger._initialize_prometheus_startup_metrics()
+
+        # Verify the error was logged
+        mock_logger.assert_called_once()
+        assert "No running event loop" in mock_logger.call_args[0][0]

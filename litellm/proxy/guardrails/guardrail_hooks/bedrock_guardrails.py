@@ -19,7 +19,10 @@ from fastapi import HTTPException
 
 import litellm
 from litellm._logging import verbose_proxy_logger
-from litellm.integrations.custom_guardrail import CustomGuardrail
+from litellm.integrations.custom_guardrail import (
+    CustomGuardrail,
+    log_guardrail_information,
+)
 from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
 from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
@@ -55,6 +58,7 @@ class BedrockGuardrail(CustomGuardrail, BaseAWSLLM):
         self.optional_params = kwargs
 
         super().__init__(**kwargs)
+        BaseAWSLLM.__init__(self)
 
     def convert_to_bedrock_format(
         self,
@@ -231,6 +235,7 @@ class BedrockGuardrail(CustomGuardrail, BaseAWSLLM):
                 response.text,
             )
 
+    @log_guardrail_information
     async def async_moderation_hook(  ### 👈 KEY CHANGE ###
         self,
         data: dict,
@@ -263,6 +268,7 @@ class BedrockGuardrail(CustomGuardrail, BaseAWSLLM):
             )
             pass
 
+    @log_guardrail_information
     async def async_post_call_success_hook(
         self,
         data: dict,

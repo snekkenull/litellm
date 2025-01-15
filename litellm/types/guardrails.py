@@ -26,6 +26,7 @@ class SupportedGuardrailIntegrations(Enum):
     LAKERA = "lakera"
     PRESIDIO = "presidio"
     HIDE_SECRETS = "hide-secrets"
+    AIM = "aim"
 
 
 class Role(Enum):
@@ -105,9 +106,10 @@ class LitellmParams(TypedDict):
     guard_name: Optional[str]
 
 
-class Guardrail(TypedDict):
+class Guardrail(TypedDict, total=False):
     guardrail_name: str
     litellm_params: LitellmParams
+    guardrail_info: Optional[Dict]
 
 
 class guardrailConfig(TypedDict):
@@ -136,3 +138,12 @@ class BedrockRequest(TypedDict, total=False):
 
 class DynamicGuardrailParams(TypedDict):
     extra_body: Dict[str, Any]
+
+
+class GuardrailInfoResponse(BaseModel):
+    guardrail_name: Optional[str]
+    guardrail_info: Optional[Dict]  # This will contain all other fields
+
+
+class ListGuardrailsResponse(BaseModel):
+    guardrails: List[GuardrailInfoResponse]
