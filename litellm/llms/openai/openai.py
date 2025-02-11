@@ -27,6 +27,7 @@ from typing_extensions import overload
 import litellm
 from litellm import LlmProviders
 from litellm._logging import verbose_logger
+from litellm.constants import DEFAULT_MAX_RETRIES
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.logging_utils import track_llm_api_timing
 from litellm.llms.base_llm.base_model_iterator import BaseModelResponseIterator
@@ -47,7 +48,10 @@ from litellm.utils import (
 
 from ...types.llms.openai import *
 from ..base import BaseLLM
+from .chat.o_series_transformation import OpenAIOSeriesConfig
 from .common_utils import OpenAIError, drop_params_from_unprocessable_entity_error
+
+openaiOSeriesConfig = OpenAIOSeriesConfig()
 
 
 class MistralEmbeddingConfig:
@@ -174,8 +178,8 @@ class OpenAIConfig(BaseConfig):
         Returns:
             list: List of supported openai parameters
         """
-        if litellm.openAIO1Config.is_model_o1_reasoning_model(model=model):
-            return litellm.openAIO1Config.get_supported_openai_params(model=model)
+        if openaiOSeriesConfig.is_model_o_series_model(model=model):
+            return openaiOSeriesConfig.get_supported_openai_params(model=model)
         elif litellm.openAIGPTAudioConfig.is_model_gpt_audio_model(model=model):
             return litellm.openAIGPTAudioConfig.get_supported_openai_params(model=model)
         else:
@@ -203,8 +207,8 @@ class OpenAIConfig(BaseConfig):
         drop_params: bool,
     ) -> dict:
         """ """
-        if litellm.openAIO1Config.is_model_o1_reasoning_model(model=model):
-            return litellm.openAIO1Config.map_openai_params(
+        if openaiOSeriesConfig.is_model_o_series_model(model=model):
+            return openaiOSeriesConfig.map_openai_params(
                 non_default_params=non_default_params,
                 optional_params=optional_params,
                 model=model,
@@ -317,6 +321,17 @@ class OpenAIChatCompletion(BaseLLM):
     def __init__(self) -> None:
         super().__init__()
 
+    def _set_dynamic_params_on_client(
+        self,
+        client: Union[OpenAI, AsyncOpenAI],
+        organization: Optional[str] = None,
+        max_retries: Optional[int] = None,
+    ):
+        if organization is not None:
+            client.organization = organization
+        if max_retries is not None:
+            client.max_retries = max_retries
+
     def _get_openai_client(
         self,
         is_async: bool,
@@ -324,11 +339,10 @@ class OpenAIChatCompletion(BaseLLM):
         api_base: Optional[str] = None,
         api_version: Optional[str] = None,
         timeout: Union[float, httpx.Timeout] = httpx.Timeout(None),
-        max_retries: Optional[int] = 2,
+        max_retries: Optional[int] = DEFAULT_MAX_RETRIES,
         organization: Optional[str] = None,
         client: Optional[Union[OpenAI, AsyncOpenAI]] = None,
     ):
-        args = locals()
         if client is None:
             if not isinstance(max_retries, int):
                 raise OpenAIError(
@@ -361,7 +375,6 @@ class OpenAIChatCompletion(BaseLLM):
                     organization=organization,
                 )
             else:
-
                 _new_client = OpenAI(
                     api_key=api_key,
                     base_url=api_base,
@@ -380,6 +393,11 @@ class OpenAIChatCompletion(BaseLLM):
             return _new_client
 
         else:
+            self._set_dynamic_params_on_client(
+                client=client,
+                organization=organization,
+                max_retries=max_retries,
+            )
             return client
 
     @track_llm_api_timing()

@@ -9,10 +9,30 @@ if (isLocal != true) {
   console.log = function() {};
 }
 
+export const DEFAULT_ORGANIZATION = "default_organization";
+
 export interface Model {
   model_name: string;
   litellm_params: Object;
   model_info: Object | null;
+}
+
+export interface Organization {
+  organization_id: string | null;
+  organization_alias: string;
+  budget_id: string;
+  metadata: Record<string, any>;
+  models: string[];
+  spend: number;
+  model_spend: Record<string, number>;
+  created_at: string;
+  created_by: string;
+  updated_at: string;
+  updated_by: string;
+  litellm_budget_table: any;  // Simplified to any since we don't need the detailed structure
+  teams: any[] | null;
+  users: any[] | null;
+  members: any[] | null;
 }
 
 const baseUrl = "/"; // Assuming the base URL is the root
@@ -98,7 +118,7 @@ export const modelCreateCall = async (
     const data = await response.json();
     console.log("API Response:", data);
     message.success(
-      "Model created successfully. Wait 60s and refresh on 'All Models' page"
+      "Model created successfully"
     );
     return data;
   } catch (error) {
@@ -168,7 +188,6 @@ export const modelDeleteCall = async (
 
     const data = await response.json();
     console.log("API Response:", data);
-    message.success("Model deleted successfully. Restart server to see this.");
     return data;
   } catch (error) {
     console.error("Failed to create key:", error);
@@ -707,7 +726,8 @@ export const teamInfoCall = async (
 
 export const teamListCall = async (
   accessToken: String, 
-  userID: String | null = null
+  organizationID: string | null,
+  userID: String | null = null,
 ) => {
   /**
    * Get all available teams on proxy
@@ -715,9 +735,21 @@ export const teamListCall = async (
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/team/list` : `/team/list`;
     console.log("in teamInfoCall");
+    const queryParams = new URLSearchParams();
+    
     if (userID) {
-      url += `?user_id=${userID}`;
+      queryParams.append('user_id', userID.toString());
     }
+    
+    if (organizationID) {
+      queryParams.append('organization_id', organizationID.toString());
+    }
+    
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -1509,6 +1541,36 @@ export const allEndUsersCall = async (accessToken: String) => {
     throw error;
   }
 };
+
+export const userFilterUICall = async (accessToken: String, params: URLSearchParams) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/filter/ui` : `/user/filter/ui`;
+
+    if (params.get("user_email")) {
+      url += `?user_email=${params.get("user_email")}`;
+    }
+    if (params.get("user_id")) {
+      url += `?user_id=${params.get("user_id")}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+  return await response.json();
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+}
 
 export const userSpendLogsCall = async (
   accessToken: String,
@@ -2402,6 +2464,47 @@ export const teamMemberUpdateCall = async (
   }
 }
 
+export const teamMemberDeleteCall = async (
+  accessToken: string,
+  teamId: string,
+  formValues: Member // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in teamMemberAddCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/team/member_delete`
+      : `/team/member_delete`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        team_id: teamId,
+        ...(formValues.user_email && { user_email: formValues.user_email }),
+        ...(formValues.user_id && { user_id: formValues.user_id })
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+}
+
 export const organizationMemberAddCall = async (
   accessToken: string,
   organizationId: string,
@@ -3118,3 +3221,41 @@ export const getGuardrailsList = async (accessToken: String) => {
     throw error;
   }
 };
+
+
+export const uiSpendLogDetailsCall = async (
+  accessToken: string,
+  logId: string,
+  start_date: string
+) => {
+  try {
+    // Construct base URL
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/spend/logs/ui/${logId}?start_date=${encodeURIComponent(start_date)}`
+      : `/spend/logs/ui/${logId}?start_date=${encodeURIComponent(start_date)}`;
+
+    console.log("Fetching log details from:", url);
+    
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("Fetched log details:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch log details:", error);
+    throw error;
+  }
+};
+

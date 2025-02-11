@@ -1421,6 +1421,8 @@ def anthropic_messages_pt(  # noqa: PLR0915
                             )
 
                             user_content.append(_content_element)
+                        elif m.get("type", "") == "document":
+                            user_content.append(cast(AnthropicMessagesDocumentParam, m))
                 elif isinstance(user_message_types_block["content"], str):
                     _anthropic_content_text_element: AnthropicMessagesTextParam = {
                         "type": "text",
@@ -2153,7 +2155,7 @@ def stringify_json_tool_call_content(messages: List) -> List:
 
 import base64
 import mimetypes
-from cgi import parse_header
+from email.message import Message
 
 import httpx
 
@@ -2174,8 +2176,9 @@ from litellm.types.llms.bedrock import ToolUseBlock as BedrockToolUseBlock
 
 
 def _parse_content_type(content_type: str) -> str:
-    main_type, _ = parse_header(content_type)
-    return main_type
+    m = Message()
+    m["content-type"] = content_type
+    return m.get_content_type()
 
 
 class BedrockImageProcessor:
@@ -2306,7 +2309,7 @@ class BedrockImageProcessor:
         """Synchronous image processing."""
         if "base64" in image_url:
             img_bytes, mime_type, image_format = cls._parse_base64_image(image_url)
-        elif "https:/" in image_url:
+        elif "http://" in image_url or "https://" in image_url:
             img_bytes, mime_type = BedrockImageProcessor.get_image_details(image_url)
             image_format = mime_type.split("/")[1]
         else:

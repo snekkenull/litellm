@@ -1,11 +1,12 @@
 import moment from "moment";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useState, useRef, useEffect } from "react";
 
-import { uiSpendLogsCall } from "../networking";
+import { uiSpendLogsCall, uiSpendLogDetailsCall } from "../networking";
 import { DataTable } from "./table";
 import { columns, LogEntry } from "./columns";
-import { Row } from "@tanstack/react-table";
+import { RequestViewer } from "./request_viewer";
+import { prefetchLogDetails } from "./prefetch";
 
 interface SpendLogsTableProps {
   accessToken: string | null;
@@ -54,6 +55,8 @@ export default function SpendLogsTable({
   const [selectedKeyHash, setSelectedKeyHash] = useState("");
   const [selectedFilter, setSelectedFilter] = useState("Team ID");
 
+  const queryClient = useQueryClient();
+
   // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -82,6 +85,7 @@ export default function SpendLogsTable({
       document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Update the logs query to use the imported prefetchLogDetails
   const logs = useQuery<PaginatedResponse>({
     queryKey: [
       "logs",
@@ -105,12 +109,21 @@ export default function SpendLogsTable({
         };
       }
 
-      const formattedStartTime = moment(startTime).format("YYYY-MM-DD HH:mm:ss");
-      const formattedEndTime = isCustomDate 
-        ? moment(endTime).format("YYYY-MM-DD HH:mm:ss")
-        : moment().format("YYYY-MM-DD HH:mm:ss");
+      console.log("Fetching logs with params:", {
+        startTime,
+        endTime,
+        selectedTeamId,
+        selectedKeyHash,
+        currentPage,
+        pageSize
+      });
 
-      return await uiSpendLogsCall(
+      const formattedStartTime = moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss");
+      const formattedEndTime = isCustomDate 
+        ? moment(endTime).utc().format("YYYY-MM-DD HH:mm:ss")
+        : moment().utc().format("YYYY-MM-DD HH:mm:ss");
+
+      const response = await uiSpendLogsCall(
         accessToken,
         selectedKeyHash || undefined,
         selectedTeamId || undefined,
@@ -120,30 +133,62 @@ export default function SpendLogsTable({
         currentPage,
         pageSize
       );
+
+      console.log("Received logs response:", response);
+
+      // Update prefetchLogDetails call with new parameters
+      prefetchLogDetails(response.data, formattedStartTime, accessToken, queryClient);
+
+      return response;
     },
     enabled: !!accessToken && !!token && !!userRole && !!userID,
     refetchInterval: 5000,
     refetchIntervalInBackground: true,
   });
 
+  // Move useQueries before the early return
+  const logDetailsQueries = useQueries({
+    queries: logs.data?.data?.map((log) => ({
+      queryKey: ["logDetails", log.request_id, moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss")],
+      queryFn: () => uiSpendLogDetailsCall(accessToken!, log.request_id, moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss")),
+      staleTime: 10 * 60 * 1000,
+      cacheTime: 10 * 60 * 1000,
+      enabled: !!log.request_id,
+    })) || []
+  });
+
   if (!accessToken || !token || !userRole || !userID) {
-    console.log(
-      "got None values for one of accessToken, token, userRole, userID",
-    );
+    console.log("got None values for one of accessToken, token, userRole, userID");
     return null;
   }
 
+  // Consolidate log details from queries
+  const logDetails: Record<string, any> = {};
+  logDetailsQueries.forEach((q, index) => {
+    const log = logs.data?.data[index];
+    if (log && q.data) {
+      logDetails[log.request_id] = q.data;
+    }
+  });
+
+  // Modify the filtered data to include log details
   const filteredData =
-    logs.data?.data?.filter((log) => {
-      const matchesSearch =
-        !searchTerm ||
-        log.request_id.includes(searchTerm) ||
-        log.model.includes(searchTerm) ||
-        (log.user && log.user.includes(searchTerm));
-      
-      // No need for additional filtering since we're now handling this in the API call
-      return matchesSearch;
-    }) || [];
+    logs.data?.data
+      ?.filter((log) => {
+        const matchesSearch =
+          !searchTerm ||
+          log.request_id.includes(searchTerm) ||
+          log.model.includes(searchTerm) ||
+          (log.user && log.user.includes(searchTerm));
+        
+        return matchesSearch;
+      })
+      .map(log => ({
+        ...log,
+        // Include messages/response from cached details
+        messages: logDetails[log.request_id]?.messages || [],
+        response: logDetails[log.request_id]?.response || {},
+      })) || [];
 
   // Add this function to handle manual refresh
   const handleRefresh = () => {
@@ -176,7 +221,7 @@ export default function SpendLogsTable({
         <h1 className="text-xl font-semibold">Request Logs</h1>
       </div>
       
-      <div className="bg-white rounded-lg shadow overflow-hidden">
+      <div className="bg-white rounded-lg shadow">
         <div className="border-b px-6 py-4">
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between space-y-4 md:space-y-0">
             <div className="flex flex-wrap items-center gap-3">
@@ -525,77 +570,6 @@ export default function SpendLogsTable({
           getRowCanExpand={() => true}
         />
       </div>
-    </div>
-  );
-}
-
-function RequestViewer({ row }: { row: Row<LogEntry> }) {
-  const formatData = (input: any) => {
-    if (typeof input === "string") {
-      try {
-        return JSON.parse(input);
-      } catch {
-        return input;
-      }
-    }
-    return input;
-  };
-
-  return (
-    <div className="p-6 bg-gray-50 space-y-6">
-      {/* Request Card */}
-      <div className="bg-white rounded-lg shadow">
-        <div className="flex justify-between items-center p-4 border-b">
-          <h3 className="text-lg font-medium">Request</h3>
-          <div>
-            <button className="mr-2 px-3 py-1 text-sm border rounded hover:bg-gray-50">
-              Expand
-            </button>
-            <button className="px-3 py-1 text-sm border rounded hover:bg-gray-50">
-              JSON
-            </button>
-          </div>
-        </div>
-        <pre className="p-4 overflow-auto text-sm">
-          {JSON.stringify(formatData(row.original.messages), null, 2)}
-        </pre>
-      </div>
-
-      {/* Response Card */}
-      <div className="bg-white rounded-lg shadow">
-        <div className="flex justify-between items-center p-4 border-b">
-          <h3 className="text-lg font-medium">Response</h3>
-          <div>
-            <button className="mr-2 px-3 py-1 text-sm border rounded hover:bg-gray-50">
-              Expand
-            </button>
-            <button className="px-3 py-1 text-sm border rounded hover:bg-gray-50">
-              JSON
-            </button>
-          </div>
-        </div>
-        <pre className="p-4 overflow-auto text-sm">
-          {JSON.stringify(formatData(row.original.response), null, 2)}
-        </pre>
-      </div>
-
-      {/* Metadata Card */}
-      {row.original.metadata &&
-        Object.keys(row.original.metadata).length > 0 && (
-          <div className="bg-white rounded-lg shadow">
-            <div className="flex justify-between items-center p-4 border-b">
-              <h3 className="text-lg font-medium">Metadata</h3>
-              <div>
-                <button className="px-3 py-1 text-sm border rounded hover:bg-gray-50">
-                  JSON
-                </button>
-              </div>
-            </div>
-            <pre className="p-4 overflow-auto text-sm">
-              {JSON.stringify(row.original.metadata, null, 2)}
-            </pre>
-          </div>
-        )}
     </div>
   );
 }
