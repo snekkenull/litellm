@@ -2092,6 +2092,7 @@ def test_bedrock_prompt_caching_message(messages, expected_cache_control):
         ("bedrock/mistral.mistral-7b-instruct-v0.1:0", True),
         ("bedrock/meta.llama3-1-8b-instruct:0", True),
         ("bedrock/meta.llama3-2-70b-instruct:0", True),
+        ("bedrock/meta.llama3-3-70b-instruct-v1:0", True),
         ("bedrock/amazon.titan-embed-text-v1:0", False),
     ],
 )
@@ -2613,7 +2614,7 @@ def test_bedrock_custom_deepseek():
             # Verify the URL
             assert (
                 mock_post.call_args.kwargs["url"]
-                == "https://bedrock-runtime.us-west-2.amazonaws.com/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A086734376398%3Aimported-model%2Fr4c4kewx2s0n/invoke"
+                == "https://bedrock-runtime.us-east-1.amazonaws.com/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A086734376398%3Aimported-model%2Fr4c4kewx2s0n/invoke"
             )
 
             # Verify the request body format
