@@ -26,7 +26,6 @@ import httpx  # type: ignore
 
 import litellm
 from litellm import verbose_logger
-from litellm._logging import print_verbose
 from litellm.caching.caching import InMemoryCache
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.litellm_core_utils.litellm_logging import Logging
@@ -51,13 +50,19 @@ from litellm.llms.custom_httpx.http_handler import (
 )
 from litellm.types.llms.bedrock import *
 from litellm.types.llms.openai import (
+    ChatCompletionThinkingBlock,
     ChatCompletionToolCallChunk,
     ChatCompletionToolCallFunctionChunk,
     ChatCompletionUsageBlock,
 )
-from litellm.types.utils import ChatCompletionMessageToolCall, Choices
+from litellm.types.utils import ChatCompletionMessageToolCall, Choices, Delta
 from litellm.types.utils import GenericStreamingChunk as GChunk
-from litellm.types.utils import ModelResponse, Usage
+from litellm.types.utils import (
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
 from litellm.utils import CustomStreamWrapper, get_secret
 
 from ..base_aws_llm import BaseAWSLLM
@@ -212,7 +217,6 @@ async def make_call(
                 api_key="",
                 data=data,
                 messages=messages,
-                print_verbose=print_verbose,
                 encoding=litellm.encoding,
             )  # type: ignore
             completion_stream: Any = MockResponseIterator(
@@ -220,6 +224,14 @@ async def make_call(
             )
         elif bedrock_invoke_provider == "anthropic":
             decoder: AWSEventStreamDecoder = AmazonAnthropicClaudeStreamDecoder(
+                model=model,
+                sync_stream=False,
+            )
+            completion_stream = decoder.aiter_bytes(
+                response.aiter_bytes(chunk_size=1024)
+            )
+        elif bedrock_invoke_provider == "deepseek_r1":
+            decoder = AmazonDeepSeekR1StreamDecoder(
                 model=model,
                 sync_stream=False,
             )
@@ -290,7 +302,6 @@ def make_sync_call(
                 api_key="",
                 data=data,
                 messages=messages,
-                print_verbose=print_verbose,
                 encoding=litellm.encoding,
             )  # type: ignore
             completion_stream: Any = MockResponseIterator(
@@ -298,6 +309,12 @@ def make_sync_call(
             )
         elif bedrock_invoke_provider == "anthropic":
             decoder: AWSEventStreamDecoder = AmazonAnthropicClaudeStreamDecoder(
+                model=model,
+                sync_stream=True,
+            )
+            completion_stream = decoder.iter_bytes(response.iter_bytes(chunk_size=1024))
+        elif bedrock_invoke_provider == "deepseek_r1":
+            decoder = AmazonDeepSeekR1StreamDecoder(
                 model=model,
                 sync_stream=True,
             )
@@ -511,7 +528,7 @@ class BedrockLLM(BaseAWSLLM):
                                 ].message.tool_calls:
                                     _tool_call = {**tool_call.dict(), "index": 0}
                                     _tool_calls.append(_tool_call)
-                            delta_obj = litellm.utils.Delta(
+                            delta_obj = Delta(
                                 content=getattr(
                                     model_response.choices[0].message, "content", None
                                 ),
@@ -1244,14 +1261,37 @@ class AWSEventStreamDecoder:
             return True
         return False
 
-    def converse_chunk_parser(self, chunk_data: dict) -> GChunk:
+    def extract_reasoning_content_str(
+        self, reasoning_content_block: BedrockConverseReasoningContentBlockDelta
+    ) -> Optional[str]:
+        if "text" in reasoning_content_block:
+            return reasoning_content_block["text"]
+        return None
+
+    def translate_thinking_blocks(
+        self, thinking_block: BedrockConverseReasoningContentBlockDelta
+    ) -> Optional[List[ChatCompletionThinkingBlock]]:
+        """
+        Translate the thinking blocks to a string
+        """
+
+        thinking_blocks_list: List[ChatCompletionThinkingBlock] = []
+        _thinking_block = ChatCompletionThinkingBlock(type="thinking")
+        if "text" in thinking_block:
+            _thinking_block["thinking"] = thinking_block["text"]
+        thinking_blocks_list.append(_thinking_block)
+        return thinking_blocks_list
+
+    def converse_chunk_parser(self, chunk_data: dict) -> ModelResponseStream:
         try:
             verbose_logger.debug("\n\nRaw Chunk: {}\n\n".format(chunk_data))
             text = ""
             tool_use: Optional[ChatCompletionToolCallChunk] = None
-            is_finished = False
             finish_reason = ""
             usage: Optional[ChatCompletionUsageBlock] = None
+            provider_specific_fields: dict = {}
+            reasoning_content: Optional[str] = None
+            thinking_blocks: Optional[List[ChatCompletionThinkingBlock]] = None
 
             index = int(chunk_data.get("contentBlockIndex", 0))
             if "start" in chunk_data:
@@ -1291,6 +1331,16 @@ class AWSEventStreamDecoder:
                         },
                         "index": index,
                     }
+                elif "reasoningContent" in delta_obj:
+                    provider_specific_fields = {
+                        "reasoningContent": delta_obj["reasoningContent"],
+                    }
+                    reasoning_content = self.extract_reasoning_content_str(
+                        delta_obj["reasoningContent"]
+                    )
+                    thinking_blocks = self.translate_thinking_blocks(
+                        delta_obj["reasoningContent"]
+                    )
             elif (
                 "contentBlockIndex" in chunk_data
             ):  # stop block, no 'start' or 'delta' object
@@ -1307,7 +1357,6 @@ class AWSEventStreamDecoder:
                     }
             elif "stopReason" in chunk_data:
                 finish_reason = map_finish_reason(chunk_data.get("stopReason", "stop"))
-                is_finished = True
             elif "usage" in chunk_data:
                 usage = ChatCompletionUsageBlock(
                     prompt_tokens=chunk_data.get("inputTokens", 0),
@@ -1315,23 +1364,38 @@ class AWSEventStreamDecoder:
                     total_tokens=chunk_data.get("totalTokens", 0),
                 )
 
-            response = GChunk(
-                text=text,
-                tool_use=tool_use,
-                is_finished=is_finished,
-                finish_reason=finish_reason,
-                usage=usage,
-                index=index,
-            )
-
+            model_response_provider_specific_fields = {}
             if "trace" in chunk_data:
                 trace = chunk_data.get("trace")
-                response["provider_specific_fields"] = {"trace": trace}
+                model_response_provider_specific_fields["trace"] = trace
+            response = ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason=finish_reason,
+                        index=index,
+                        delta=Delta(
+                            content=text,
+                            role="assistant",
+                            tool_calls=[tool_use] if tool_use else None,
+                            provider_specific_fields=(
+                                provider_specific_fields
+                                if provider_specific_fields
+                                else None
+                            ),
+                            thinking_blocks=thinking_blocks,
+                            reasoning_content=reasoning_content,
+                        ),
+                    )
+                ],
+                usage=usage,
+                provider_specific_fields=model_response_provider_specific_fields,
+            )
+
             return response
         except Exception as e:
             raise Exception("Received streaming error - {}".format(str(e)))
 
-    def _chunk_parser(self, chunk_data: dict) -> GChunk:
+    def _chunk_parser(self, chunk_data: dict) -> Union[GChunk, ModelResponseStream]:
         text = ""
         is_finished = False
         finish_reason = ""
@@ -1389,7 +1453,9 @@ class AWSEventStreamDecoder:
             tool_use=None,
         )
 
-    def iter_bytes(self, iterator: Iterator[bytes]) -> Iterator[GChunk]:
+    def iter_bytes(
+        self, iterator: Iterator[bytes]
+    ) -> Iterator[Union[GChunk, ModelResponseStream]]:
         """Given an iterator that yields lines, iterate over it & yield every event encountered"""
         from botocore.eventstream import EventStreamBuffer
 
@@ -1405,7 +1471,7 @@ class AWSEventStreamDecoder:
 
     async def aiter_bytes(
         self, iterator: AsyncIterator[bytes]
-    ) -> AsyncIterator[GChunk]:
+    ) -> AsyncIterator[Union[GChunk, ModelResponseStream]]:
         """Given an async iterator that yields lines, iterate over it & yield every event encountered"""
         from botocore.eventstream import EventStreamBuffer
 
@@ -1470,8 +1536,29 @@ class AmazonAnthropicClaudeStreamDecoder(AWSEventStreamDecoder):
             sync_stream=sync_stream,
         )
 
-    def _chunk_parser(self, chunk_data: dict) -> GChunk:
+    def _chunk_parser(self, chunk_data: dict) -> ModelResponseStream:
         return self.anthropic_model_response_iterator.chunk_parser(chunk=chunk_data)
+
+
+class AmazonDeepSeekR1StreamDecoder(AWSEventStreamDecoder):
+    def __init__(
+        self,
+        model: str,
+        sync_stream: bool,
+    ) -> None:
+
+        super().__init__(model=model)
+        from litellm.llms.bedrock.chat.invoke_transformations.amazon_deepseek_transformation import (
+            AmazonDeepseekR1ResponseIterator,
+        )
+
+        self.deepseek_model_response_iterator = AmazonDeepseekR1ResponseIterator(
+            streaming_response=None,
+            sync_stream=sync_stream,
+        )
+
+    def _chunk_parser(self, chunk_data: dict) -> Union[GChunk, ModelResponseStream]:
+        return self.deepseek_model_response_iterator.chunk_parser(chunk=chunk_data)
 
 
 class MockResponseIterator:  # for returning ai21 streaming responses

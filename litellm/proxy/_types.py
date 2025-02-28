@@ -239,6 +239,7 @@ class LiteLLMRoutes(enum.Enum):
         # rerank
         "/rerank",
         "/v1/rerank",
+        "/v2/rerank"
         # realtime
         "/realtime",
         "/v1/realtime",
@@ -278,6 +279,7 @@ class LiteLLMRoutes(enum.Enum):
         "/model_group/info",
         "/health",
         "/key/list",
+        "/user/filter/ui",
     ]
 
     # NOTE: ROUTES ONLY FOR MASTER KEY - only the Master Key should be able to Reset Spend
@@ -354,7 +356,6 @@ class LiteLLMRoutes(enum.Enum):
         "/key/info",
         "/config",
         "/spend",
-        "/user",
         "/model/info",
         "/v2/model/info",
         "/v2/key/info",
@@ -609,6 +610,8 @@ class GenerateKeyResponse(KeyRequestBase):
     token_id: Optional[str] = None
     litellm_budget_table: Optional[Any] = None
     token: Optional[str] = None
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1114,6 +1117,7 @@ class NewOrganizationRequest(LiteLLM_BudgetTable):
     organization_alias: str
     models: List = []
     budget_id: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class OrganizationRequest(LiteLLMPydanticObjectBase):
@@ -1385,7 +1389,9 @@ class LiteLLM_VerificationToken(LiteLLMPydanticObjectBase):
     litellm_budget_table: Optional[dict] = None
     org_id: Optional[str] = None  # org id for a given key
     created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
     updated_at: Optional[datetime] = None
+    updated_by: Optional[str] = None
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -1565,6 +1571,15 @@ class LiteLLM_UserTable(LiteLLMPydanticObjectBase):
         return values
 
     model_config = ConfigDict(protected_namespaces=())
+
+
+class LiteLLM_UserTableFiltered(BaseModel):  # done to avoid exposing sensitive data
+    user_id: str
+    user_email: str
+
+
+class LiteLLM_UserTableWithKeyCount(LiteLLM_UserTable):
+    key_count: int = 0
 
 
 class LiteLLM_EndUserTable(LiteLLMPydanticObjectBase):
