@@ -72,6 +72,9 @@ _response_stream_shape_cache = None
 bedrock_tool_name_mappings: InMemoryCache = InMemoryCache(
     max_size_in_memory=50, default_ttl=600
 )
+from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
+converse_config = AmazonConverseConfig()
 
 
 class AmazonCohereChatConfig:
@@ -226,6 +229,7 @@ async def make_call(
             decoder: AWSEventStreamDecoder = AmazonAnthropicClaudeStreamDecoder(
                 model=model,
                 sync_stream=False,
+                json_mode=json_mode,
             )
             completion_stream = decoder.aiter_bytes(
                 response.aiter_bytes(chunk_size=1024)
@@ -311,6 +315,7 @@ def make_sync_call(
             decoder: AWSEventStreamDecoder = AmazonAnthropicClaudeStreamDecoder(
                 model=model,
                 sync_stream=True,
+                json_mode=json_mode,
             )
             completion_stream = decoder.iter_bytes(response.iter_bytes(chunk_size=1024))
         elif bedrock_invoke_provider == "deepseek_r1":
@@ -491,9 +496,9 @@ class BedrockLLM(BaseAWSLLM):
                             content=None,
                         )
                         model_response.choices[0].message = _message  # type: ignore
-                        model_response._hidden_params["original_response"] = (
-                            outputText  # allow user to access raw anthropic tool calling response
-                        )
+                        model_response._hidden_params[
+                            "original_response"
+                        ] = outputText  # allow user to access raw anthropic tool calling response
                     if (
                         _is_function_call is True
                         and stream is not None
@@ -801,9 +806,9 @@ class BedrockLLM(BaseAWSLLM):
                     ):  # completion(top_k=3) > anthropic_config(top_k=3) <- allows for dynamic variables to be passed in
                         inference_params[k] = v
                 if stream is True:
-                    inference_params["stream"] = (
-                        True  # cohere requires stream = True in inference params
-                    )
+                    inference_params[
+                        "stream"
+                    ] = True  # cohere requires stream = True in inference params
                 data = json.dumps({"prompt": prompt, **inference_params})
         elif provider == "anthropic":
             if model.startswith("anthropic.claude-3"):
@@ -1150,27 +1155,6 @@ class BedrockLLM(BaseAWSLLM):
         return streaming_response
 
     @staticmethod
-    def get_bedrock_invoke_provider(
-        model: str,
-    ) -> Optional[litellm.BEDROCK_INVOKE_PROVIDERS_LITERAL]:
-        """
-        Helper function to get the bedrock provider from the model
-
-        handles 2 scenarions:
-        1. model=anthropic.claude-3-5-sonnet-20240620-v1:0 -> Returns `anthropic`
-        2. model=llama/arn:aws:bedrock:us-east-1:086734376398:imported-model/r4c4kewx2s0n -> Returns `llama`
-        """
-        _split_model = model.split(".")[0]
-        if _split_model in get_args(litellm.BEDROCK_INVOKE_PROVIDERS_LITERAL):
-            return cast(litellm.BEDROCK_INVOKE_PROVIDERS_LITERAL, _split_model)
-
-        # If not a known provider, check for pattern with two slashes
-        provider = BedrockLLM._get_provider_from_model_path(model)
-        if provider is not None:
-            return provider
-        return None
-
-    @staticmethod
     def _get_provider_from_model_path(
         model_path: str,
     ) -> Optional[litellm.BEDROCK_INVOKE_PROVIDERS_LITERAL]:
@@ -1221,7 +1205,6 @@ class BedrockLLM(BaseAWSLLM):
 def get_response_stream_shape():
     global _response_stream_shape_cache
     if _response_stream_shape_cache is None:
-
         from botocore.loaders import Loader
         from botocore.model import ServiceModel
 
@@ -1250,7 +1233,9 @@ class AWSEventStreamDecoder:
         if len(self.content_blocks) == 0:
             return False
 
-        if "text" in self.content_blocks[0]:
+        if (
+            "toolUse" not in self.content_blocks[0]
+        ):  # be explicit - only do this if tool use block, as this is to prevent json decoding errors
             return False
 
         for block in self.content_blocks:
@@ -1279,6 +1264,9 @@ class AWSEventStreamDecoder:
         _thinking_block = ChatCompletionThinkingBlock(type="thinking")
         if "text" in thinking_block:
             _thinking_block["thinking"] = thinking_block["text"]
+        elif "signature" in thinking_block:
+            _thinking_block["signature"] = thinking_block["signature"]
+            _thinking_block["thinking"] = ""  # consistent with anthropic response
         thinking_blocks_list.append(_thinking_block)
         return thinking_blocks_list
 
@@ -1288,7 +1276,7 @@ class AWSEventStreamDecoder:
             text = ""
             tool_use: Optional[ChatCompletionToolCallChunk] = None
             finish_reason = ""
-            usage: Optional[ChatCompletionUsageBlock] = None
+            usage: Optional[Usage] = None
             provider_specific_fields: dict = {}
             reasoning_content: Optional[str] = None
             thinking_blocks: Optional[List[ChatCompletionThinkingBlock]] = None
@@ -1341,6 +1329,12 @@ class AWSEventStreamDecoder:
                     thinking_blocks = self.translate_thinking_blocks(
                         delta_obj["reasoningContent"]
                     )
+                    if (
+                        thinking_blocks
+                        and len(thinking_blocks) > 0
+                        and reasoning_content is None
+                    ):
+                        reasoning_content = ""  # set to non-empty string to ensure consistency with Anthropic
             elif (
                 "contentBlockIndex" in chunk_data
             ):  # stop block, no 'start' or 'delta' object
@@ -1358,11 +1352,7 @@ class AWSEventStreamDecoder:
             elif "stopReason" in chunk_data:
                 finish_reason = map_finish_reason(chunk_data.get("stopReason", "stop"))
             elif "usage" in chunk_data:
-                usage = ChatCompletionUsageBlock(
-                    prompt_tokens=chunk_data.get("inputTokens", 0),
-                    completion_tokens=chunk_data.get("outputTokens", 0),
-                    total_tokens=chunk_data.get("totalTokens", 0),
-                )
+                usage = converse_config._transform_usage(chunk_data.get("usage", {}))
 
             model_response_provider_specific_fields = {}
             if "trace" in chunk_data:
@@ -1524,6 +1514,7 @@ class AmazonAnthropicClaudeStreamDecoder(AWSEventStreamDecoder):
         self,
         model: str,
         sync_stream: bool,
+        json_mode: Optional[bool] = None,
     ) -> None:
         """
         Child class of AWSEventStreamDecoder that handles the streaming response from the Anthropic family of models
@@ -1534,6 +1525,7 @@ class AmazonAnthropicClaudeStreamDecoder(AWSEventStreamDecoder):
         self.anthropic_model_response_iterator = AnthropicModelResponseIterator(
             streaming_response=None,
             sync_stream=sync_stream,
+            json_mode=json_mode,
         )
 
     def _chunk_parser(self, chunk_data: dict) -> ModelResponseStream:
@@ -1546,7 +1538,6 @@ class AmazonDeepSeekR1StreamDecoder(AWSEventStreamDecoder):
         model: str,
         sync_stream: bool,
     ) -> None:
-
         super().__init__(model=model)
         from litellm.llms.bedrock.chat.invoke_transformations.amazon_deepseek_transformation import (
             AmazonDeepseekR1ResponseIterator,
