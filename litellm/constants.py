@@ -21,9 +21,18 @@ DEFAULT_MAX_TOKENS = 256  # used when providers need a default
 MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB = 1024  # 1MB = 1024KB
 SINGLE_DEPLOYMENT_TRAFFIC_FAILURE_THRESHOLD = 1000  # Minimum number of requests to consider "reasonable traffic". Used for single-deployment cooldown logic.
 
+DEFAULT_REASONING_EFFORT_LOW_THINKING_BUDGET = 1024
+DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET = 2048
+DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET = 4096
+MAX_TOKEN_TRIMMING_ATTEMPTS = 10  # Maximum number of attempts to trim the message
+########## Networking constants ##############################################################
+_DEFAULT_TTL_FOR_HTTPX_CLIENTS = 3600  # 1 hour, re-use the same httpx client for 1 hour
+
 ########### v2 Architecture constants for managing writing updates to the database ###########
 REDIS_UPDATE_BUFFER_KEY = "litellm_spend_update_buffer"
 REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_spend_update_buffer"
+REDIS_DAILY_TEAM_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_team_spend_update_buffer"
+REDIS_DAILY_TAG_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_tag_spend_update_buffer"
 MAX_REDIS_BUFFER_DEQUEUE_COUNT = 100
 MAX_SIZE_IN_MEMORY_QUEUE = 10000
 MAX_IN_MEMORY_QUEUE_FLUSH_COUNT = 1000
@@ -85,8 +94,11 @@ STREAM_SSE_DONE_STRING: str = "[DONE]"
 DEFAULT_REPLICATE_GPU_PRICE_PER_SECOND = 0.001400  # price per second for a100 80GB
 FIREWORKS_AI_56_B_MOE = 56
 FIREWORKS_AI_176_B_MOE = 176
+FIREWORKS_AI_4_B = 4
 FIREWORKS_AI_16_B = 16
 FIREWORKS_AI_80_B = 80
+#### Logging callback constants ####
+REDACTED_BY_LITELM_STRING = "REDACTED_BY_LITELM"
 
 LITELLM_CHAT_PROVIDERS = [
     "openai",
@@ -146,8 +158,11 @@ LITELLM_CHAT_PROVIDERS = [
     "custom",
     "litellm_proxy",
     "hosted_vllm",
+    "llamafile",
     "lm_studio",
     "galadriel",
+    "meta_llama",
+    "nscale",
 ]
 
 
@@ -208,6 +223,8 @@ openai_compatible_endpoints: List = [
     "api.sambanova.ai/v1",
     "api.x.ai/v1",
     "api.galadriel.ai/v1",
+    "api.llama.com/compat/v1/",
+    "inference.api.nscale.com/v1",
 ]
 
 
@@ -235,14 +252,19 @@ openai_compatible_providers: List = [
     "github",
     "litellm_proxy",
     "hosted_vllm",
+    "llamafile",
     "lm_studio",
     "galadriel",
+    "meta_llama",
+    "nscale",
 ]
 openai_text_completion_compatible_providers: List = (
     [  # providers that support `/v1/completions`
         "together_ai",
         "fireworks_ai",
         "hosted_vllm",
+        "meta_llama",
+        "llamafile",
     ]
 )
 _openai_like_providers: List = [
