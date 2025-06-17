@@ -629,3 +629,191 @@ async def test_get_user_info_from_db_alternate_user_id():
         user_info = await get_user_info_from_db(**args)
         mock_get_user_object.assert_called_once()
         mock_get_user_object.call_args.kwargs["user_id"] = "krrishd-email1234"
+
+
+@pytest.mark.asyncio
+async def test_check_and_update_if_proxy_admin_id():
+    """
+    Test that a user with matching PROXY_ADMIN_ID gets their role updated to admin
+    """
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.management_endpoints.ui_sso import (
+        check_and_update_if_proxy_admin_id,
+    )
+
+    # Mock Prisma client
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_usertable.update = AsyncMock()
+
+    # Set up test data
+    test_user_id = "test_admin_123"
+    test_user_role = "user"
+
+    with patch.dict(os.environ, {"PROXY_ADMIN_ID": test_user_id}):
+        # Act
+        updated_role = await check_and_update_if_proxy_admin_id(
+            user_role=test_user_role, user_id=test_user_id, prisma_client=mock_prisma
+        )
+
+        # Assert
+        assert updated_role == LitellmUserRoles.PROXY_ADMIN.value
+        mock_prisma.db.litellm_usertable.update.assert_called_once_with(
+            where={"user_id": test_user_id},
+            data={"user_role": LitellmUserRoles.PROXY_ADMIN.value},
+        )
+
+
+@pytest.mark.asyncio
+async def test_check_and_update_if_proxy_admin_id_already_admin():
+    """
+    Test that a user who is already an admin doesn't get their role updated
+    """
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.management_endpoints.ui_sso import (
+        check_and_update_if_proxy_admin_id,
+    )
+
+    # Mock Prisma client
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_usertable.update = AsyncMock()
+
+    # Set up test data
+    test_user_id = "test_admin_123"
+    test_user_role = LitellmUserRoles.PROXY_ADMIN.value
+
+    with patch.dict(os.environ, {"PROXY_ADMIN_ID": test_user_id}):
+        # Act
+        updated_role = await check_and_update_if_proxy_admin_id(
+            user_role=test_user_role, user_id=test_user_id, prisma_client=mock_prisma
+        )
+
+        # Assert
+        assert updated_role == LitellmUserRoles.PROXY_ADMIN.value
+        mock_prisma.db.litellm_usertable.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_generic_sso_response_with_additional_headers():
+    """
+    Test that GENERIC_SSO_HEADERS environment variable is correctly processed
+    and passed to generic_sso.verify_and_process
+    """
+    from litellm.proxy.management_endpoints.ui_sso import get_generic_sso_response
+
+    # Arrange
+    mock_request = MagicMock(spec=Request)
+    mock_jwt_handler = MagicMock(spec=JWTHandler)
+    mock_jwt_handler.get_team_ids_from_jwt.return_value = []
+
+    generic_client_id = "test_client_id"
+    redirect_url = "http://test.com/callback"
+
+    # Mock response from verify_and_process
+    mock_sso_response = {
+        "sub": "test_user_123",
+        "email": "test@example.com",
+        "preferred_username": "testuser",
+    }
+
+    # Set up environment variables including GENERIC_SSO_HEADERS
+    test_env_vars = {
+        "GENERIC_CLIENT_SECRET": "test_secret",
+        "GENERIC_AUTHORIZATION_ENDPOINT": "https://auth.example.com/auth",
+        "GENERIC_TOKEN_ENDPOINT": "https://auth.example.com/token",
+        "GENERIC_USERINFO_ENDPOINT": "https://auth.example.com/userinfo",
+        "GENERIC_SSO_HEADERS": "Authorization=Bearer token123, Content-Type=application/json, X-Custom-Header=custom-value",
+    }
+
+    # Expected headers dictionary
+    expected_headers = {
+        "Authorization": "Bearer token123",
+        "Content-Type": "application/json",
+        "X-Custom-Header": "custom-value",
+    }
+
+    # Mock the SSO provider and its methods
+    mock_sso_instance = MagicMock()
+    mock_sso_instance.verify_and_process = AsyncMock(return_value=mock_sso_response)
+
+    mock_sso_class = MagicMock(return_value=mock_sso_instance)
+
+    with patch.dict(os.environ, test_env_vars):
+        with patch("fastapi_sso.sso.base.DiscoveryDocument") as mock_discovery:
+            with patch(
+                "fastapi_sso.sso.generic.create_provider", return_value=mock_sso_class
+            ) as mock_create_provider:
+                # Act
+                result = await get_generic_sso_response(
+                    request=mock_request,
+                    jwt_handler=mock_jwt_handler,
+                    generic_client_id=generic_client_id,
+                    redirect_url=redirect_url,
+                )
+
+                # Assert
+                # Verify verify_and_process was called with the correct headers
+                mock_sso_instance.verify_and_process.assert_called_once_with(
+                    mock_request,
+                    params={"include_client_id": False},
+                    headers=expected_headers,
+                )
+
+                # Verify the result is returned correctly
+                assert result == mock_sso_response
+
+
+@pytest.mark.asyncio
+async def test_get_generic_sso_response_with_empty_headers():
+    """
+    Test that when GENERIC_SSO_HEADERS is not set, an empty headers dict is passed
+    """
+    from litellm.proxy.management_endpoints.ui_sso import get_generic_sso_response
+
+    # Arrange
+    mock_request = MagicMock(spec=Request)
+    mock_jwt_handler = MagicMock(spec=JWTHandler)
+    mock_jwt_handler.get_team_ids_from_jwt.return_value = []
+
+    generic_client_id = "test_client_id"
+    redirect_url = "http://test.com/callback"
+
+    mock_sso_response = {
+        "sub": "test_user_123",
+        "email": "test@example.com",
+        "preferred_username": "testuser",
+    }
+
+    # Set up environment variables without GENERIC_SSO_HEADERS
+    test_env_vars = {
+        "GENERIC_CLIENT_SECRET": "test_secret",
+        "GENERIC_AUTHORIZATION_ENDPOINT": "https://auth.example.com/auth",
+        "GENERIC_TOKEN_ENDPOINT": "https://auth.example.com/token",
+        "GENERIC_USERINFO_ENDPOINT": "https://auth.example.com/userinfo",
+    }
+
+    # Mock the SSO provider and its methods
+    mock_sso_instance = MagicMock()
+    mock_sso_instance.verify_and_process = AsyncMock(return_value=mock_sso_response)
+
+    mock_sso_class = MagicMock(return_value=mock_sso_instance)
+
+    with patch.dict(os.environ, test_env_vars):
+        with patch("fastapi_sso.sso.base.DiscoveryDocument") as mock_discovery:
+            with patch(
+                "fastapi_sso.sso.generic.create_provider", return_value=mock_sso_class
+            ) as mock_create_provider:
+                # Act
+                result = await get_generic_sso_response(
+                    request=mock_request,
+                    jwt_handler=mock_jwt_handler,
+                    generic_client_id=generic_client_id,
+                    redirect_url=redirect_url,
+                )
+
+                # Assert
+                # Verify verify_and_process was called with empty headers dict
+                mock_sso_instance.verify_and_process.assert_called_once_with(
+                    mock_request, params={"include_client_id": False}, headers={}
+                )
+
+                assert result == mock_sso_response

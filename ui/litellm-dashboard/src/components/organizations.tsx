@@ -135,7 +135,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
   if (!premiumUser) {
     return (
       <div>
-        <Text>This is a LiteLLM Enterprise feature, and requires a valid key to use. Get a trial key <a href="https://litellm.ai/pricing" target="_blank" rel="noopener noreferrer">here</a>.</Text>
+        <Text>This is a LiteLLM Enterprise feature, and requires a valid key to use. Get a trial key <a href="https://www.litellm.ai/#pricing" target="_blank" rel="noopener noreferrer">here</a>.</Text>
       </div>
     );
   }
@@ -459,12 +459,6 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
             </Col>
             {(userRole === "Admin" || userRole === "Org Admin") && (
               <Col numColSpan={1}>
-                <Button
-                  className="mx-auto"
-                  onClick={() => setIsOrgModalVisible(true)}
-                >
-                  + Create New Organization
-                </Button>
                 <Modal
                   title="Create Organization"
                   visible={isOrgModalVisible}

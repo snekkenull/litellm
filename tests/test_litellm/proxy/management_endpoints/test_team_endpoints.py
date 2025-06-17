@@ -18,6 +18,10 @@ from litellm.proxy._types import (
     LiteLLM_OrganizationTable,
     LiteLLM_TeamTable,
     LitellmUserRoles,
+    Member,
+    ProxyErrorTypes,
+    ProxyException,
+    TeamMemberAddRequest,
 )
 from litellm.proxy.management_endpoints.team_endpoints import (
     user_api_key_auth,  # Assuming this dependency is needed
@@ -26,6 +30,7 @@ from litellm.proxy.management_endpoints.team_endpoints import (
     GetTeamMemberPermissionsResponse,
     UpdateTeamMemberPermissionsRequest,
     router,
+    team_member_add_duplication_check,
     validate_team_org_change,
 )
 from litellm.proxy.management_helpers.team_member_permission_checks import (
@@ -313,3 +318,266 @@ async def test_new_team_with_object_permission(mock_db_client, mock_admin_auth):
     assert mock_team_create.call_count == 1
     created_team_kwargs = mock_team_create.call_args.kwargs
     assert created_team_kwargs["data"].get("object_permission_id") == "objperm123"
+
+
+@pytest.mark.asyncio
+async def test_team_update_object_permissions_existing_permission(monkeypatch):
+    """
+    Test updating object permissions when a team already has an existing object_permission_id.
+
+    This test verifies that when updating vector stores for a team that already has an
+    object_permission_id, the existing LiteLLM_ObjectPermissionTable record is updated
+    with the new permissions and the object_permission_id remains the same.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pytest
+
+    from litellm.proxy._types import LiteLLM_ObjectPermissionBase, LiteLLM_TeamTable
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        handle_update_object_permission,
+    )
+
+    # Mock prisma client
+    mock_prisma_client = AsyncMock()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    # Mock existing team with object_permission_id
+    existing_team_row = LiteLLM_TeamTable(
+        team_id="test_team_id",
+        object_permission_id="existing_perm_id_123",
+        team_alias="test_team",
+    )
+
+    # Mock existing object permission record
+    existing_object_permission = MagicMock()
+    existing_object_permission.model_dump.return_value = {
+        "object_permission_id": "existing_perm_id_123",
+        "vector_stores": ["old_store_1", "old_store_2"],
+    }
+
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(
+        return_value=existing_object_permission
+    )
+
+    # Mock upsert operation
+    updated_permission = MagicMock()
+    updated_permission.object_permission_id = "existing_perm_id_123"
+    mock_prisma_client.db.litellm_objectpermissiontable.upsert = AsyncMock(
+        return_value=updated_permission
+    )
+
+    # Test data with new object permission
+    data_json = {
+        "object_permission": LiteLLM_ObjectPermissionBase(
+            vector_stores=["new_store_1", "new_store_2", "new_store_3"]
+        ).model_dump(exclude_unset=True, exclude_none=True),
+        "team_alias": "updated_team",
+    }
+
+    # Call the function
+    result = await handle_update_object_permission(
+        data_json=data_json,
+        existing_team_row=existing_team_row,
+    )
+
+    # Verify the object_permission was removed from data_json and object_permission_id was set
+    assert "object_permission" not in result
+    assert result["object_permission_id"] == "existing_perm_id_123"
+
+    # Verify database operations were called correctly
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique.assert_called_once_with(
+        where={"object_permission_id": "existing_perm_id_123"}
+    )
+    mock_prisma_client.db.litellm_objectpermissiontable.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_team_update_object_permissions_no_existing_permission(monkeypatch):
+    """
+    Test creating object permissions when a team has no existing object_permission_id.
+
+    This test verifies that when updating object permissions for a team that has
+    object_permission_id set to None, a new entry is created in the
+    LiteLLM_ObjectPermissionTable and the team is updated with the new object_permission_id.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pytest
+
+    from litellm.proxy._types import LiteLLM_ObjectPermissionBase, LiteLLM_TeamTable
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        handle_update_object_permission,
+    )
+
+    # Mock prisma client
+    mock_prisma_client = AsyncMock()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    existing_team_row_no_perm = LiteLLM_TeamTable(
+        team_id="test_team_id_2",
+        object_permission_id=None,
+        team_alias="test_team_2",
+    )
+
+    # Mock find_unique to return None (no existing permission)
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    # Mock upsert to create new record
+    new_permission = MagicMock()
+    new_permission.object_permission_id = "new_perm_id_456"
+    mock_prisma_client.db.litellm_objectpermissiontable.upsert = AsyncMock(
+        return_value=new_permission
+    )
+
+    data_json = {
+        "object_permission": LiteLLM_ObjectPermissionBase(
+            vector_stores=["brand_new_store"]
+        ).model_dump(exclude_unset=True, exclude_none=True),
+        "team_alias": "updated_team_2",
+    }
+
+    result = await handle_update_object_permission(
+        data_json=data_json,
+        existing_team_row=existing_team_row_no_perm,
+    )
+
+    # Verify new object_permission_id was set
+    assert "object_permission" not in result
+    assert result["object_permission_id"] == "new_perm_id_456"
+
+    # Verify upsert was called to create new record
+    mock_prisma_client.db.litellm_objectpermissiontable.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_team_update_object_permissions_missing_permission_record(monkeypatch):
+    """
+    Test creating object permissions when existing object_permission_id record is not found.
+
+    This test verifies that when updating object permissions for a team that has an
+    object_permission_id but the corresponding record cannot be found in the database,
+    a new entry is created in the LiteLLM_ObjectPermissionTable with the new permissions.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pytest
+
+    from litellm.proxy._types import LiteLLM_ObjectPermissionBase, LiteLLM_TeamTable
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        handle_update_object_permission,
+    )
+
+    # Mock prisma client
+    mock_prisma_client = AsyncMock()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    existing_team_row_missing_perm = LiteLLM_TeamTable(
+        team_id="test_team_id_3",
+        object_permission_id="missing_perm_id_789",
+        team_alias="test_team_3",
+    )
+
+    # Mock find_unique to return None (permission record not found)
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    # Mock upsert to create new record
+    new_permission = MagicMock()
+    new_permission.object_permission_id = "recreated_perm_id_789"
+    mock_prisma_client.db.litellm_objectpermissiontable.upsert = AsyncMock(
+        return_value=new_permission
+    )
+
+    data_json = {
+        "object_permission": LiteLLM_ObjectPermissionBase(
+            vector_stores=["recreated_store"]
+        ).model_dump(exclude_unset=True, exclude_none=True),
+        "team_alias": "updated_team_3",
+    }
+
+    result = await handle_update_object_permission(
+        data_json=data_json,
+        existing_team_row=existing_team_row_missing_perm,
+    )
+
+    # Verify new object_permission_id was set
+    assert "object_permission" not in result
+    assert result["object_permission_id"] == "recreated_perm_id_789"
+
+    # Verify find_unique was called with the missing permission ID
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique.assert_called_once_with(
+        where={"object_permission_id": "missing_perm_id_789"}
+    )
+
+    # Verify upsert was called to create new record
+    mock_prisma_client.db.litellm_objectpermissiontable.upsert.assert_called_once()
+
+
+def test_team_member_add_duplication_check_raises_proxy_exception():
+    """
+    Test that team_member_add_duplication_check raises ProxyException when a user is already in the team
+    """
+    # Create a mock team with existing members
+    existing_team_row = MagicMock(spec=LiteLLM_TeamTable)
+    existing_team_row.team_id = "test-team-123"
+    existing_team_row.members_with_roles = [
+        Member(user_id="existing-user-id", role="user"),
+        Member(user_id="another-user-id", role="admin"),
+    ]
+
+    # Create a request to add a member who is already in the team
+    duplicate_member = Member(user_id="existing-user-id", role="user")
+    data = TeamMemberAddRequest(
+        team_id="test-team-123",
+        member=duplicate_member,
+    )
+
+    # Test that ProxyException is raised with the correct error type
+    with pytest.raises(ProxyException) as exc_info:
+        team_member_add_duplication_check(
+            data=data,
+            existing_team_row=existing_team_row,
+        )
+
+    # Verify the exception details
+    assert exc_info.value.type == ProxyErrorTypes.team_member_already_in_team
+    assert exc_info.value.param == "user_id"
+    assert exc_info.value.code == "400"
+    assert "existing-user-id" in str(exc_info.value.message)
+    assert "already in team" in str(exc_info.value.message)
+
+
+def test_team_member_add_duplication_check_allows_new_member():
+    """
+    Test that team_member_add_duplication_check allows adding a new member who is not already in the team
+    """
+    # Create a mock team with existing members
+    existing_team_row = MagicMock(spec=LiteLLM_TeamTable)
+    existing_team_row.team_id = "test-team-123"
+    existing_team_row.members_with_roles = [
+        Member(user_id="existing-user-id", role="user"),
+        Member(user_id="another-user-id", role="admin"),
+    ]
+
+    # Create a request to add a member who is NOT already in the team
+    new_member = Member(user_id="new-user-id", role="user")
+    data = TeamMemberAddRequest(
+        team_id="test-team-123",
+        member=new_member,
+    )
+
+    # Test that no exception is raised for a new member
+    try:
+        team_member_add_duplication_check(
+            data=data,
+            existing_team_row=existing_team_row,
+        )
+        # If we reach here, no exception was raised, which is expected
+        assert True
+    except ProxyException:
+        # If a ProxyException is raised, the test should fail
+        pytest.fail("ProxyException should not be raised for a new member")
