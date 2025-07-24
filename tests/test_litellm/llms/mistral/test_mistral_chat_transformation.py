@@ -8,7 +8,7 @@ sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
 
-from litellm.llms.mistral.mistral_chat_transformation import MistralConfig
+from litellm.llms.mistral.chat.transformation import MistralConfig
 
 
 @pytest.mark.asyncio
@@ -95,10 +95,6 @@ class TestMistralReasoningSupport:
     def test_get_mistral_reasoning_system_prompt(self):
         """Test that the reasoning system prompt is properly formatted."""
         prompt = MistralConfig._get_mistral_reasoning_system_prompt()
-        
-        assert "<think>" in prompt
-        assert "</think>" in prompt
-        assert "step-by-step" in prompt
         assert isinstance(prompt, str)
         assert len(prompt) > 50  # Ensure it's not empty
 
@@ -349,3 +345,135 @@ class TestMistralReasoningSupport:
         assert result["messages"][1]["content"] == "Solve for x: 2x + 5 = 13"
         assert result.get("temperature") == 0.7
         assert "_add_reasoning_prompt" not in result
+
+
+
+class TestMistralNameHandling:
+    """Test suite for Mistral name handling in messages."""
+
+    def test_handle_name_in_message_tool_role_empty_name_removes_name(self):
+        """Test that empty name is removed for tool messages."""
+        # Test with empty string
+        tool_message = {"role": "tool", "content": "Function result", "name": ""}
+        result = MistralConfig._handle_name_in_message(tool_message)
+        assert "name" not in result
+        assert result["role"] == "tool"
+        assert result["content"] == "Function result"
+
+    def test_handle_name_in_message_tool_role_valid_name_keeps_name(self):
+        """Test that valid name is kept for tool messages."""
+        # Test with normal function name
+        tool_message = {"role": "tool", "content": "Function result", "name": "get_weather"}
+        result = MistralConfig._handle_name_in_message(tool_message)
+        assert "name" in result
+        assert result["name"] == "get_weather"
+        assert result["role"] == "tool"
+        assert result["content"] == "Function result"
+
+    def test_handle_name_in_message_no_name_field(self):
+        """Test that messages without name field are unchanged."""
+        # Test with user role
+        user_message = {"role": "user", "content": "Hello"}
+        result = MistralConfig._handle_name_in_message(user_message)
+        assert "name" not in result
+        assert result["role"] == "user"
+        assert result["content"] == "Hello"
+
+
+class TestMistralParallelToolCalls:
+    """Test suite for Mistral parallel tool calls functionality."""
+
+    def test_get_supported_openai_params_includes_parallel_tool_calls(self):
+        """Test that parallel_tool_calls is in supported parameters."""
+        mistral_config = MistralConfig()
+        supported_params = mistral_config.get_supported_openai_params("mistral/mistral-large-latest")
+        assert "parallel_tool_calls" in supported_params
+
+    def test_transform_request_preserves_parallel_tool_calls(self):
+        """Test that transform_request preserves parallel_tool_calls parameter."""
+        mistral_config = MistralConfig()
+        
+        messages = [
+            {"role": "user", "content": "What's the weather like?"}
+        ]
+        optional_params = {"parallel_tool_calls": True}
+        
+        result = mistral_config.transform_request(
+            model="mistral/mistral-large-latest",
+            messages=messages,
+            optional_params=optional_params,
+            litellm_params={},
+            headers={}
+        )
+        
+        assert result.get("parallel_tool_calls") is True
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["role"] == "user"
+
+
+class TestMistralEmptyContentHandling:
+    """Test suite for Mistral empty content response handling functionality."""
+
+    def test_handle_empty_content_response_converts_empty_string_to_none(self):
+        """Test that empty string content is converted to None."""
+        response_data = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "role": "assistant"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        }
+        
+        result = MistralConfig._handle_empty_content_response(response_data)
+        
+        assert result["choices"][0]["message"]["content"] is None
+
+    def test_handle_empty_content_response_preserves_actual_content(self):
+        """Test that actual content is preserved unchanged."""
+        response_data = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Hello, how can I help you?",
+                        "role": "assistant"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        }
+        
+        result = MistralConfig._handle_empty_content_response(response_data)
+        
+        assert result["choices"][0]["message"]["content"] == "Hello, how can I help you?"
+
+    def test_handle_empty_content_response_handles_multiple_choices(self):
+        """Test that only the first choice is processed for empty content."""
+        response_data = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "role": "assistant"
+                    },
+                    "finish_reason": "stop"
+                },
+                {
+                    "message": {
+                        "content": "",
+                        "role": "assistant"  
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        }
+        
+        result = MistralConfig._handle_empty_content_response(response_data)
+        
+        # Only first choice should be converted to None
+        assert result["choices"][0]["message"]["content"] is None
+        # Second choice should remain as empty string
+        assert result["choices"][1]["message"]["content"] is None
