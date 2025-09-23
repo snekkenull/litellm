@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 import orjson
@@ -51,8 +52,6 @@ async def _read_request_body(request: Optional[Request]) -> Dict:
                     body_str = body.decode("utf-8") if isinstance(body, bytes) else body
 
                     # Replace invalid surrogate pairs
-                    import re
-
                     # This regex finds incomplete surrogate pairs
                     body_str = re.sub(
                         r"[\uD800-\uDBFF](?![\uDC00-\uDFFF])", "", body_str
@@ -102,6 +101,18 @@ def _safe_get_request_parsed_body(request: Optional[Request]) -> Optional[dict]:
         return {key: parsed_body[key] for key in accepted_keys}
     return None
 
+def _safe_get_request_query_params(request: Optional[Request]) -> Dict:
+    if request is None:
+        return {}
+    try:
+        if hasattr(request, "query_params"):
+            return dict(request.query_params)
+        return {}
+    except Exception as e:
+        verbose_proxy_logger.debug(
+            "Unexpected error reading request query params - {}".format(e)
+        )
+        return {}
 
 def _safe_set_request_parsed_body(
     request: Optional[Request],

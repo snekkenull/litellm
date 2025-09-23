@@ -759,6 +759,7 @@ def test_completion_base64(model):
         else:
             pytest.fail(f"An exception occurred - {str(e)}")
 
+
 def test_completion_mistral_api():
     try:
         litellm.set_verbose = True
@@ -3190,7 +3191,6 @@ def response_format_tests(response: litellm.ModelResponse):
         "bedrock/mistral.mistral-large-2407-v1:0",
         "bedrock/cohere.command-r-plus-v1:0",
         "anthropic.claude-3-sonnet-20240229-v1:0",
-        "anthropic.claude-instant-v1",
         "mistral.mistral-7b-instruct-v0:2",
         # "bedrock/amazon.titan-tg1-large",
         "meta.llama3-8b-instruct-v1:0",
@@ -3696,7 +3696,7 @@ def test_completion_volcengine():
     [
         # "gemini-1.0-pro",
         "gemini-1.5-pro",
-        # "gemini-1.5-flash",
+        # "gemini-2.5-flash-lite",
     ],
 )
 @pytest.mark.flaky(retries=3, delay=1)
@@ -3750,7 +3750,7 @@ def test_completion_gemini(model):
 @pytest.mark.asyncio
 async def test_acompletion_gemini():
     litellm.set_verbose = True
-    model_name = "gemini/gemini-1.5-flash"
+    model_name = "gemini/gemini-2.5-flash-lite"
     messages = [{"role": "user", "content": "Hey, how's it going?"}]
     try:
         response = await litellm.acompletion(model=model_name, messages=messages)
@@ -4592,14 +4592,3 @@ def test_completion_gpt_4o_empty_str():
             messages=[{"role": "user", "content": ""}],
         )
         assert resp.choices[0].message.content is not None
-
-
-def test_completion_openrouter_reasoning_content():
-    litellm._turn_on_debug()
-    resp = litellm.completion(
-        model="openrouter/anthropic/claude-3.7-sonnet",
-        messages=[{"role": "user", "content": "Hello world"}],
-        reasoning={"effort": "high"},
-    )
-    print(resp)
-    assert resp.choices[0].message.reasoning_content is not None

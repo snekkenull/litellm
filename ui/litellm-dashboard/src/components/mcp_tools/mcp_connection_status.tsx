@@ -37,10 +37,9 @@ const MCPConnectionStatus: React.FC<MCPConnectionStatusProps> = ({
       // Prepare the MCP server config from form values
       const mcpServerConfig = {
         server_id: formValues.server_id || "",
-        alias: formValues.alias || "",
+        server_name: formValues.server_name || "",
         url: formValues.url,
         transport: formValues.transport,
-        spec_version: formValues.spec_version,
         auth_type: formValues.auth_type,
         mcp_info: formValues.mcp_info,
       };
@@ -83,7 +82,7 @@ const MCPConnectionStatus: React.FC<MCPConnectionStatusProps> = ({
       setHasShownSuccessMessage(false);
       onToolsLoaded?.([]);
     }
-  }, [formValues.url, formValues.transport, formValues.auth_type, formValues.spec_version, accessToken]);
+  }, [formValues.url, formValues.transport, formValues.auth_type, accessToken]);
 
   // Don't show anything if required fields aren't filled
   if (!canFetchTools && !formValues.url) {

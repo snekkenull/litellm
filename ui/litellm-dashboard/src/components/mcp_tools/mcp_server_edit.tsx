@@ -5,6 +5,8 @@ import { MCPServer, MCPServerCostInfo } from "./types";
 import { updateMCPServer, testMCPToolsListRequest } from "../networking";
 import MCPServerCostConfig from "./mcp_server_cost_config";
 import { MinusCircleOutlined, PlusOutlined, InfoCircleOutlined } from "@ant-design/icons";
+import { validateMCPServerUrl, validateMCPServerName } from "./utils";
+import NotificationsManager from "../molecules/notifications_manager";
 
 interface MCPServerEditProps {
   mcpServer: MCPServer;
@@ -20,6 +22,7 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({ mcpServer, accessToken, o
   const [tools, setTools] = useState<any[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
   const [searchValue, setSearchValue] = useState<string>("");
+  const [aliasManuallyEdited, setAliasManuallyEdited] = useState(false)
 
   // Initialize cost config from existing server data
   useEffect(() => {
@@ -53,10 +56,9 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({ mcpServer, accessToken, o
       // Prepare the MCP server config from existing server data
       const mcpServerConfig = {
         server_id: mcpServer.server_id,
-        alias: mcpServer.alias,
+        server_name: mcpServer.server_name,
         url: mcpServer.url,
         transport: mcpServer.transport,
-        spec_version: mcpServer.spec_version,
         auth_type: mcpServer.auth_type,
         mcp_info: mcpServer.mcp_info,
       };
@@ -117,18 +119,19 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({ mcpServer, accessToken, o
         ...values,
         server_id: mcpServer.server_id,
         mcp_info: {
-          server_name: values.alias || values.url,
+          server_name: values.server_name || values.url,
           description: values.description,
           mcp_server_cost_info: Object.keys(costConfig).length > 0 ? costConfig : null
         },
-        mcp_access_groups: accessGroups
+        mcp_access_groups: accessGroups,
+        alias: values.alias,
       };
 
       const updated = await updateMCPServer(accessToken, payload);
-      message.success("MCP Server updated successfully");
+      NotificationsManager.success("MCP Server updated successfully");
       onSuccess(updated);
     } catch (error: any) {
-      message.error("Failed to update MCP Server" + (error?.message ? `: ${error.message}` : ""));
+      NotificationsManager.fromBackend("Failed to update MCP Server" + (error?.message ? `: ${error.message}` : ""));
     }
   };
 
@@ -141,18 +144,24 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({ mcpServer, accessToken, o
       <TabPanels className="mt-6">
         <TabPanel>
           <Form form={form} onFinish={handleSave} initialValues={mcpServer} layout="vertical">
-            <Form.Item label="MCP Server Name" name="alias" rules={[{
-              validator: (_, value) =>
-                value && value.includes('-')
-                  ? Promise.reject("Server name cannot contain '-' (hyphen). Please use '_' (underscore) instead.")
-                  : Promise.resolve(),
+            <Form.Item label="MCP Server Name" name="server_name" rules={[{
+              validator: (_, value) => validateMCPServerName(value),
             }]}>
               <TextInput />
+            </Form.Item>
+            <Form.Item label="Alias" name="alias" rules={[{
+                validator: (_, value) => validateMCPServerName(value),
+              }]}
+            >
+              <TextInput onChange={() => setAliasManuallyEdited(true)} />
             </Form.Item>
             <Form.Item label="Description" name="description">
               <TextInput />
             </Form.Item>
-            <Form.Item label="MCP Server URL" name="url" rules={[{ required: true, message: "Please enter a server URL" }]}> 
+            <Form.Item label="MCP Server URL" name="url" rules={[
+              { required: true, message: "Please enter a server URL" },
+              { validator: (_, value) => validateMCPServerUrl(value) },
+            ]}> 
               <TextInput />
             </Form.Item>
             <Form.Item label="Transport Type" name="transport" rules={[{ required: true }]}> 
@@ -167,12 +176,6 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({ mcpServer, accessToken, o
                 <Select.Option value="api_key">API Key</Select.Option>
                 <Select.Option value="bearer_token">Bearer Token</Select.Option>
                 <Select.Option value="basic">Basic Auth</Select.Option>
-              </Select>
-            </Form.Item>
-            <Form.Item label="MCP Version" name="spec_version" rules={[{ required: true }]}> 
-              <Select>
-                <Select.Option value="2025-03-26">2025-03-26 (Latest)</Select.Option>
-                <Select.Option value="2024-11-05">2024-11-05</Select.Option>
               </Select>
             </Form.Item>
 

@@ -190,6 +190,7 @@ class LakeraAIGuardrail(CustomGuardrail):
             "audio_transcription",
             "pass_through_endpoint",
             "rerank",
+            "mcp_call",
         ],
     ) -> Optional[Union[Exception, str, Dict]]:
         from litellm.proxy.common_utils.callback_utils import (
@@ -231,7 +232,7 @@ class LakeraAIGuardrail(CustomGuardrail):
                     lakera_response=lakera_guardrail_response,
                     masked_entity_count=masked_entity_count,
                 )
-                verbose_proxy_logger.info(
+                verbose_proxy_logger.debug(
                     "Lakera AI: Masked PII in messages instead of blocking request"
                 )
             else:
@@ -261,6 +262,7 @@ class LakeraAIGuardrail(CustomGuardrail):
             "moderation",
             "audio_transcription",
             "responses",
+            "mcp_call",
         ],
     ):
         from litellm.proxy.common_utils.callback_utils import (
@@ -297,7 +299,7 @@ class LakeraAIGuardrail(CustomGuardrail):
                     lakera_response=lakera_guardrail_response,
                     masked_entity_count=masked_entity_count,
                 )
-                verbose_proxy_logger.info(
+                verbose_proxy_logger.debug(
                     "Lakera AI: Masked PII in messages instead of blocking request"
                 )
             else:

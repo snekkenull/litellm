@@ -46,8 +46,8 @@ from litellm.proxy.management_endpoints.model_management_endpoints import (
     _add_model_to_db,
 )
 from litellm.proxy.management_helpers.object_permission_utils import (
-    handle_update_object_permission_common,
     attach_object_permission_to_dict,
+    handle_update_object_permission_common,
 )
 from litellm.proxy.management_helpers.team_member_permission_checks import (
     TeamMemberPermissionChecks,
@@ -58,6 +58,7 @@ from litellm.proxy.utils import (
     PrismaClient,
     _hash_token_if_needed,
     handle_exception_on_proxy,
+    is_valid_api_key,
     jsonify_object,
 )
 from litellm.router import Router
@@ -331,6 +332,52 @@ def common_key_access_checks(
 router = APIRouter()
 
 
+def handle_key_type(data: GenerateKeyRequest, data_json: dict) -> dict:
+    """
+    Handle the key type.
+    """
+    key_type = data.key_type
+    data_json.pop("key_type", None)
+    if key_type == LiteLLMKeyType.LLM_API:
+        data_json["allowed_routes"] = ["llm_api_routes"]
+    elif key_type == LiteLLMKeyType.MANAGEMENT:
+        data_json["allowed_routes"] = ["management_routes"]
+    elif key_type == LiteLLMKeyType.READ_ONLY:
+        data_json["allowed_routes"] = ["info_routes"]
+    return data_json
+
+
+async def validate_team_id_used_in_service_account_request(
+    team_id: Optional[str],
+    prisma_client: Optional[PrismaClient],
+):
+    """
+    Validate team_id is used in the request body for generating a service account key
+    """
+    if team_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="team_id is required for service account keys. Please specify `team_id` in the request body.",
+        )
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="prisma_client is required for service account keys. Please specify `prisma_client` in the request body.",
+        )
+
+    # check if team_id exists in the database
+    team = await prisma_client.db.litellm_teamtable.find_unique(
+        where={"team_id": team_id},
+    )
+    if team is None:
+        raise HTTPException(
+            status_code=400,
+            detail="team_id does not exist in the database. Please specify a valid `team_id` in the request body.",
+        )
+    return True
+
+
 async def _common_key_generation_helper(  # noqa: PLR0915
     data: GenerateKeyRequest,
     user_api_key_dict: UserAPIKeyAuth,
@@ -350,6 +397,16 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         llm_router=llm_router,
         premium_user=premium_user,
     )
+
+    if (
+        data.metadata is not None
+        and data.metadata.get("service_account_id") is not None
+        and data.team_id is None
+    ):
+        await validate_team_id_used_in_service_account_request(
+            team_id=data.team_id,
+            prisma_client=prisma_client,
+        )
 
     # check if user set default key/generate params on config.yaml
     if litellm.default_key_generate_params is not None:
@@ -418,7 +475,7 @@ async def _common_key_generation_helper(  # noqa: PLR0915
 
         data = apply_enterprise_key_management_params(data, team_table)
     except Exception as e:
-        verbose_proxy_logger.info(
+        verbose_proxy_logger.debug(
             "litellm.proxy.proxy_server.generate_key_fn(): Enterprise key management params not applied - {}".format(
                 str(e)
             )
@@ -455,6 +512,7 @@ async def _common_key_generation_helper(  # noqa: PLR0915
 
     data_json = data.model_dump(exclude_unset=True, exclude_none=True)  # type: ignore
 
+    data_json = handle_key_type(data, data_json)
     # if we get max_budget passed to /key/generate, then use it as key_max_budget. Since generate_key_helper_fn is used to make new users
     if "max_budget" in data_json:
         data_json["key_max_budget"] = data_json.pop("max_budget", None)
@@ -494,6 +552,15 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         key_alias=data_json.get("key_alias", None),
         prisma_client=prisma_client,
     )
+
+    # Validate user-provided key format
+    if data.key is not None and not data.key.startswith("sk-"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Invalid key format. LiteLLM Virtual Key must start with 'sk-'. Received: {data.key}"
+            },
+        )
 
     response = await generate_key_helper_fn(
         request_type="key", **data_json, table_name="key"
@@ -568,9 +635,13 @@ async def generate_key_fn(
     - tpm_limit: Optional[int] - Specify tpm limit for a given key (Tokens per minute)
     - soft_budget: Optional[float] - Specify soft budget for a given key. Will trigger a slack alert when this soft budget is reached.
     - tags: Optional[List[str]] - Tags for [tracking spend](https://litellm.vercel.app/docs/proxy/enterprise#tracking-spend-for-custom-tags) and/or doing [tag-based routing](https://litellm.vercel.app/docs/proxy/tag_routing).
+    - prompts: Optional[List[str]] - List of prompts that the key is allowed to use.
     - enforced_params: Optional[List[str]] - List of enforced params for the key (Enterprise only). [Docs](https://docs.litellm.ai/docs/proxy/enterprise#enforce-required-params-for-llm-requests)
+    - prompts: Optional[List[str]] - List of prompts that the key is allowed to use.
     - allowed_routes: Optional[list] - List of allowed routes for the key. Store the actual route or store a wildcard pattern for a set of routes. Example - ["/chat/completions", "/embeddings", "/keys/*"]
     - object_permission: Optional[LiteLLM_ObjectPermissionBase] - key-specific object permission. Example - {"vector_stores": ["vector_store_1", "vector_store_2"]}. IF null or {} then no object permission.
+    - key_type: Optional[str] - Type of key that determines default allowed routes. Options: "llm_api" (can call LLM API routes), "management" (can call management routes), "read_only" (can only call info/read routes), "default" (uses default allowed routes). Defaults to "default".
+    - prompts: Optional[List[str]] - List of allowed prompts for the key. If specified, the key will only be able to use these specific prompts.
     Examples:
 
     1. Allow users to turn on/off pii masking
@@ -725,6 +796,11 @@ async def generate_service_account_key_fn(
         user_custom_key_generate,
     )
 
+    await validate_team_id_used_in_service_account_request(
+        team_id=data.team_id,
+        prisma_client=prisma_client,
+    )
+
     verbose_proxy_logger.debug("entered /key/generate")
 
     if user_custom_key_generate is not None:
@@ -789,6 +865,11 @@ def prepare_metadata_fields(
                     casted_metadata[k] = v.isoformat()
                 else:
                     casted_metadata[k] = v
+            if k in LiteLLM_ManagementEndpoint_MetadataFields_Premium:
+                from litellm.proxy.utils import _premium_user_check
+
+                _premium_user_check()
+                casted_metadata[k] = v
 
     except Exception as e:
         verbose_proxy_logger.exception(
@@ -830,12 +911,34 @@ async def prepare_key_update_data(
     data: Union[UpdateKeyRequest, RegenerateKeyRequest],
     existing_key_row: LiteLLM_VerificationToken,
 ):
+
     data_json: dict = data.model_dump(exclude_unset=True)
     data_json.pop("key", None)
     data_json.pop("new_key", None)
+    if (
+        data.metadata is not None
+        and data.metadata.get("service_account_id") is not None
+        and (data.team_id or existing_key_row.team_id) is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="team_id is required for service account keys. Please specify `team_id` in the request body.",
+        )
     non_default_values = {}
+    # ADD METADATA FIELDS
+    # Set Management Endpoint Metadata Fields
+    for field in LiteLLM_ManagementEndpoint_MetadataFields_Premium:
+        if getattr(data, field, None) is not None:
+            _set_object_metadata_field(
+                object_data=data,
+                field_name=field,
+                value=getattr(data, field),
+            )
     for k, v in data_json.items():
-        if k in LiteLLM_ManagementEndpoint_MetadataFields:
+        if (
+            k in LiteLLM_ManagementEndpoint_MetadataFields
+            or k in LiteLLM_ManagementEndpoint_MetadataFields_Premium
+        ):
             continue
         non_default_values[k] = v
 
@@ -938,6 +1041,7 @@ async def update_key_fn(
     - budget_id: Optional[str] - The budget id associated with the key. Created by calling `/budget/new`.
     - models: Optional[list] - Model_name's a user is allowed to call
     - tags: Optional[List[str]] - Tags for organizing keys (Enterprise only)
+    - prompts: Optional[List[str]] - List of prompts that the key is allowed to use.
     - enforced_params: Optional[List[str]] - List of enforced params for the key (Enterprise only). [Docs](https://docs.litellm.ai/docs/proxy/enterprise#enforce-required-params-for-llm-requests)
     - spend: Optional[float] - Amount spent by key
     - max_budget: Optional[float] - Max budget for key
@@ -955,12 +1059,14 @@ async def update_key_fn(
     - permissions: Optional[dict] - Key-specific permissions
     - send_invite_email: Optional[bool] - Send invite email to user_id
     - guardrails: Optional[List[str]] - List of active guardrails for the key
+    - prompts: Optional[List[str]] - List of prompts that the key is allowed to use.
     - blocked: Optional[bool] - Whether the key is blocked
     - aliases: Optional[dict] - Model aliases for the key - [Docs](https://litellm.vercel.app/docs/proxy/virtual_keys#model-aliases)
     - config: Optional[dict] - [DEPRECATED PARAM] Key-specific config.
     - temp_budget_increase: Optional[float] - Temporary budget increase for the key (Enterprise only).
     - temp_budget_expiry: Optional[str] - Expiry time for the temporary budget increase (Enterprise only).
     - allowed_routes: Optional[list] - List of allowed routes for the key. Store the actual route or store a wildcard pattern for a set of routes. Example - ["/chat/completions", "/embeddings", "/keys/*"]
+    - prompts: Optional[List[str]] - List of allowed prompts for the key. If specified, the key will only be able to use these specific prompts.
     - object_permission: Optional[LiteLLM_ObjectPermissionBase] - key-specific object permission. Example - {"vector_stores": ["vector_store_1", "vector_store_2"]}. IF null or {} then no object permission.
     Example:
     ```bash
@@ -1040,6 +1146,9 @@ async def update_key_fn(
                 change_initiated_by=user_api_key_dict,
                 llm_router=llm_router,
             )
+
+            # Set Management Endpoint Metadata Fields
+
         non_default_values = await prepare_key_update_data(
             data=data, existing_key_row=existing_key_row
         )
@@ -1484,6 +1593,7 @@ async def generate_key_helper_fn(  # noqa: PLR0915
     model_rpm_limit: Optional[dict] = None,
     model_tpm_limit: Optional[dict] = None,
     guardrails: Optional[list] = None,
+    prompts: Optional[list] = None,
     teams: Optional[list] = None,
     organization_id: Optional[str] = None,
     table_name: Optional[Literal["key", "user"]] = None,
@@ -1513,14 +1623,12 @@ async def generate_key_helper_fn(  # noqa: PLR0915
     if duration is None:  # allow tokens that never expire
         expires = None
     else:
-        duration_s = duration_in_seconds(duration=duration)
-        expires = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
+        expires = get_budget_reset_time(budget_duration=duration)
 
     if key_budget_duration is None:  # one-time budget
         key_reset_at = None
     else:
-        duration_s = duration_in_seconds(duration=key_budget_duration)
-        key_reset_at = datetime.now(timezone.utc) + timedelta(seconds=duration_s)
+        key_reset_at = get_budget_reset_time(budget_duration=key_budget_duration)
 
     if budget_duration is None:  # one-time budget
         reset_at = None
@@ -1541,6 +1649,9 @@ async def generate_key_helper_fn(  # noqa: PLR0915
     if guardrails is not None:
         metadata = metadata or {}
         metadata["guardrails"] = guardrails
+    if prompts is not None:
+        metadata = metadata or {}
+        metadata["prompts"] = prompts
 
     metadata_json = json.dumps(metadata)
     validate_model_max_budget(model_max_budget)
@@ -1916,7 +2027,7 @@ async def _rotate_master_key(
     # 2. process model table
     if models:
         decrypted_models = proxy_config.decrypt_model_list_from_db(new_models=models)
-        verbose_proxy_logger.info(
+        verbose_proxy_logger.debug(
             "ABLE TO DECRYPT MODELS - len(decrypted_models): %s", len(decrypted_models)
         )
         new_models = []
@@ -1930,9 +2041,9 @@ async def _rotate_master_key(
             )
             if new_model:
                 new_models.append(jsonify_object(new_model.model_dump()))
-        verbose_proxy_logger.info("Resetting proxy model table")
+        verbose_proxy_logger.debug("Resetting proxy model table")
         await prisma_client.db.litellm_proxymodeltable.delete_many()
-        verbose_proxy_logger.info("Creating %s models", len(new_models))
+        verbose_proxy_logger.debug("Creating %s models", len(new_models))
         await prisma_client.db.litellm_proxymodeltable.create_many(
             data=new_models,
         )
@@ -2351,6 +2462,9 @@ async def list_keys(
     include_team_keys: bool = Query(
         False, description="Include all keys for teams that user is an admin of."
     ),
+    include_created_by_keys: bool = Query(
+        False, description="Include keys created by the user"
+    ),
     sort_by: Optional[str] = Query(
         default=None,
         description="Column to sort by (e.g. 'user_id', 'created_at', 'spend')",
@@ -2413,6 +2527,7 @@ async def list_keys(
             return_full_object=return_full_object,
             organization_id=organization_id,
             admin_team_ids=admin_team_ids,
+            include_created_by_keys=include_created_by_keys,
             sort_by=sort_by,
             sort_order=sort_order,
         )
@@ -2490,6 +2605,7 @@ async def _list_key_helper(
     admin_team_ids: Optional[
         List[str]
     ] = None,  # New parameter for teams where user is admin
+    include_created_by_keys: bool = False,
     sort_by: Optional[str] = None,
     sort_order: str = "desc",
 ) -> KeyListResponseObject:
@@ -2538,6 +2654,10 @@ async def _list_key_helper(
 
     if user_condition:
         or_conditions.append(user_condition)
+
+    # Add condition for created by keys if provided
+    if include_created_by_keys and user_id:
+        or_conditions.append({"created_by": user_id})
 
     # Add condition for admin team keys if provided
     if admin_team_ids:
@@ -2600,7 +2720,7 @@ async def _list_key_helper(
             key_list.append(UserAPIKeyAuth(**key_dict))  # Return full key object
         else:
             _token = key_dict.get("token")
-            key_list.append(_token)  # Return only the token
+            key_list.append(cast(str, _token))  # Return only the token
 
     return KeyListResponseObject(
         keys=key_list,
@@ -2667,6 +2787,13 @@ async def block_key(
     if prisma_client is None:
         raise Exception("{}".format(CommonProxyErrors.db_not_connected_error.value))
 
+    if not is_valid_api_key(data.key):
+        raise ProxyException(
+            message="Invalid key format.",
+            type=ProxyErrorTypes.bad_request_error,
+            param="key",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
     if data.key.startswith("sk-"):
         hashed_token = hash_token(token=data.key)
     else:
@@ -2774,6 +2901,13 @@ async def unblock_key(
     if prisma_client is None:
         raise Exception("{}".format(CommonProxyErrors.db_not_connected_error.value))
 
+    if not is_valid_api_key(data.key):
+        raise ProxyException(
+            message="Invalid key format.",
+            type=ProxyErrorTypes.bad_request_error,
+            param="key",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
     if data.key.startswith("sk-"):
         hashed_token = hash_token(token=data.key)
     else:
@@ -3099,6 +3233,3 @@ def validate_model_max_budget(model_max_budget: Optional[Dict]) -> None:
         raise ValueError(
             f"Invalid model_max_budget: {str(e)}. Example of valid model_max_budget: https://docs.litellm.ai/docs/proxy/users"
         )
-
-
-
