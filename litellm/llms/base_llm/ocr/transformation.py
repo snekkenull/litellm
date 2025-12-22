@@ -4,9 +4,10 @@ Base OCR transformation configuration.
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import httpx
-from pydantic import BaseModel
+from pydantic import PrivateAttr
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.types.llms.base import LiteLLMPydanticObjectBase
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -18,14 +19,14 @@ else:
 DocumentType = Dict[str, str]
 
 
-class OCRPageDimensions(BaseModel):
+class OCRPageDimensions(LiteLLMPydanticObjectBase):
     """Page dimensions from OCR response."""
     dpi: Optional[int] = None
     height: Optional[int] = None
     width: Optional[int] = None
 
 
-class OCRPageImage(BaseModel):
+class OCRPageImage(LiteLLMPydanticObjectBase):
     """Image extracted from OCR page."""
     image_base64: Optional[str] = None
     bbox: Optional[Dict[str, Any]] = None
@@ -33,7 +34,7 @@ class OCRPageImage(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class OCRPage(BaseModel):
+class OCRPage(LiteLLMPydanticObjectBase):
     """Single page from OCR response."""
     index: int
     markdown: str
@@ -43,7 +44,7 @@ class OCRPage(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class OCRUsageInfo(BaseModel):
+class OCRUsageInfo(LiteLLMPydanticObjectBase):
     """Usage information from OCR response."""
     pages_processed: Optional[int] = None
     doc_size_bytes: Optional[int] = None
@@ -51,7 +52,7 @@ class OCRUsageInfo(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class OCRResponse(BaseModel):
+class OCRResponse(LiteLLMPydanticObjectBase):
     """
     Standard OCR response format.
     Standardized to Mistral OCR format - other providers should transform to this format.
@@ -64,8 +65,11 @@ class OCRResponse(BaseModel):
     
     model_config = {"extra": "allow"}
 
+    # Define private attributes using PrivateAttr
+    _hidden_params: dict = PrivateAttr(default_factory=dict)
 
-class OCRRequestData(BaseModel):
+
+class OCRRequestData(LiteLLMPydanticObjectBase):
     """OCR request data structure."""
     data: Optional[Union[Dict, bytes]] = None
     files: Optional[Dict[str, Any]] = None
@@ -102,6 +106,7 @@ class BaseOCRConfig:
         model: str,
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
+        litellm_params: Optional[dict] = None,
         **kwargs,
     ) -> Dict:
         """
@@ -115,6 +120,7 @@ class BaseOCRConfig:
         api_base: Optional[str],
         model: str,
         optional_params: dict,
+        litellm_params: Optional[dict] = None,
         **kwargs,
     ) -> str:
         """
@@ -191,6 +197,36 @@ class BaseOCRConfig:
         Override in provider-specific implementations.
         """
         raise NotImplementedError("transform_ocr_response must be implemented by provider")
+
+    async def async_transform_ocr_response(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        **kwargs,
+    ) -> OCRResponse:
+        """
+        Async transform provider-specific OCR response to standard format.
+        Optional method - providers can override if they need async transformations
+        (e.g., Azure Document Intelligence for async operation polling).
+        
+        Default implementation falls back to sync transform_ocr_response.
+        
+        Args:
+            model: Model name
+            raw_response: Raw HTTP response
+            logging_obj: Logging object
+            
+        Returns:
+            OCRResponse in standard format
+        """
+        # Default implementation: call sync version
+        return self.transform_ocr_response(
+            model=model,
+            raw_response=raw_response,
+            logging_obj=logging_obj,
+            **kwargs,
+        )
 
     def get_error_class(
         self,

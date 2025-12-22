@@ -37,6 +37,8 @@ from litellm.types.utils import (
     TextChoices,
     TextCompletionResponse,
     TranscriptionResponse,
+    TranscriptionUsageDurationObject,
+    TranscriptionUsageTokensObject,
     Usage,
 )
 
@@ -428,6 +430,18 @@ def convert_to_model_response_object(  # noqa: PLR0915
 
     if hidden_params is None:
         hidden_params = {}
+    
+    # Preserve existing additional_headers if they contain important provider headers
+    # For responses API, additional_headers may already be set with LLM provider headers
+    existing_additional_headers = hidden_params.get("additional_headers", {})
+    if existing_additional_headers and _response_headers is None:
+        # Keep existing headers when _response_headers is None (responses API case)
+        additional_headers = existing_additional_headers
+    else:
+        # Merge new headers with existing ones
+        if existing_additional_headers:
+            additional_headers.update(existing_additional_headers)
+    
     hidden_params["additional_headers"] = additional_headers
 
     ### CHECK IF ERROR IN RESPONSE ### - openrouter returns these in the dictionary
@@ -683,6 +697,24 @@ def convert_to_model_response_object(  # noqa: PLR0915
             for key in optional_keys:  # not guaranteed to be in response
                 if key in response_object:
                     setattr(model_response_object, key, response_object[key])
+
+            if "usage" in response_object and response_object["usage"] is not None:
+                tr_usage_object: Optional[
+                    Union[
+                        TranscriptionUsageDurationObject, TranscriptionUsageTokensObject
+                    ]
+                ] = None
+
+                if response_object["usage"].get("type", None) == "duration":
+                    tr_usage_object = TranscriptionUsageDurationObject(
+                        **response_object["usage"]
+                    )
+                elif response_object["usage"].get("type", None) == "tokens":
+                    tr_usage_object = TranscriptionUsageTokensObject(
+                        **response_object["usage"]
+                    )
+                if tr_usage_object is not None:
+                    setattr(model_response_object, "usage", tr_usage_object)
 
             if hidden_params is not None:
                 model_response_object._hidden_params = hidden_params

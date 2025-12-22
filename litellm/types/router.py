@@ -17,6 +17,7 @@ from .completion import CompletionRequest
 from .embedding import EmbeddingRequest
 from .llms.openai import OpenAIFileObject
 from .llms.vertex_ai import VERTEX_CREDENTIALS_TYPES
+from .search import SearchProvider
 from .utils import CustomPricingLiteLLMParams, ModelResponse
 
 
@@ -158,11 +159,9 @@ class CredentialLiteLLMParams(BaseModel):
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
     aws_region_name: Optional[str] = None
+    aws_bedrock_runtime_endpoint: Optional[str] = None
     ## IBM WATSONX ##
     watsonx_region_name: Optional[str] = None
-
-
-
 
 
 class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
@@ -207,7 +206,12 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
 
     # Batch/File API Params
     s3_bucket_name: Optional[str] = None
+    s3_encryption_key_id: Optional[str] = None
     gcs_bucket_name: Optional[str] = None
+
+    # Vector Store Params
+    vector_store_id: Optional[str] = None
+    milvus_text_field: Optional[str] = None
 
     def __init__(
         self,
@@ -260,6 +264,7 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
         auto_router_embedding_model: Optional[str] = None,
         # Batch/File API Params
         s3_bucket_name: Optional[str] = None,
+        s3_encryption_key_id: Optional[str] = None,
         gcs_bucket_name: Optional[str] = None,
         **params,
     ):
@@ -599,6 +604,60 @@ class ModelGroupInfo(BaseModel):
 class AssistantsTypedDict(TypedDict):
     custom_llm_provider: Literal["azure", "openai"]
     litellm_params: LiteLLMParamsTypedDict
+
+
+class SearchToolLiteLLMParams(TypedDict, total=False):
+    """
+    LiteLLM params for search tools.
+    Search tools don't require a 'model' field like regular deployments.
+    """
+
+    search_provider: Required[SearchProvider]
+    api_key: Optional[str]
+    api_base: Optional[str]
+    timeout: Optional[Union[float, str, httpx.Timeout]]
+    max_retries: Optional[int]
+
+
+class SearchToolTypedDict(TypedDict):
+    """
+    Configuration for a search tool in the router.
+
+    Example:
+        {
+            "search_tool_name": "litellm-search",
+            "litellm_params": {
+                "search_provider": "perplexity",
+                "api_key": "os.environ/PERPLEXITYAI_API_KEY"
+            }
+        }
+    """
+
+    search_tool_name: Required[str]
+    litellm_params: Required[SearchToolLiteLLMParams]
+
+
+class GuardrailLiteLLMParams(TypedDict, total=False):
+    """
+    LiteLLM params for guardrails.
+    """
+
+    guardrail: Required[str]
+    mode: Required[str]
+    api_key: Optional[str]
+    api_base: Optional[str]
+    weight: Optional[int]  # For load balancing
+
+
+class GuardrailTypedDict(TypedDict, total=False):
+    """
+    Configuration for a guardrail in the router.
+    """
+
+    guardrail_name: Required[str]
+    litellm_params: Required[GuardrailLiteLLMParams]
+    callback: Any  # The CustomGuardrail instance
+    id: Optional[str]  # Unique identifier for the guardrail deployment
 
 
 class FineTuningConfig(BaseModel):

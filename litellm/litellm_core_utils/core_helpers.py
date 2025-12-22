@@ -1,6 +1,6 @@
 # What is this?
 ## Helper utilities
-from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterable, List, Literal, Optional, Union
 
 import httpx
 
@@ -138,6 +138,22 @@ def add_missing_spend_metadata_to_litellm_metadata(
     return litellm_metadata
 
 
+def get_metadata_variable_name_from_kwargs(
+    kwargs: dict,
+) -> Literal["metadata", "litellm_metadata"]:
+    """
+    Helper to return what the "metadata" field should be called in the request data
+
+    - New endpoints return `litellm_metadata`
+    - Old endpoints return `metadata`
+
+    Context:
+    - LiteLLM used `metadata` as an internal field for storing metadata
+    - OpenAI then started using this field for their metadata
+    - LiteLLM is now moving to using `litellm_metadata` for our metadata
+    """
+    return "litellm_metadata" if "litellm_metadata" in kwargs else "metadata"
+    
 def get_litellm_metadata_from_kwargs(kwargs: dict):
     """
     Helper to get litellm metadata from all litellm request kwargs
@@ -218,7 +234,8 @@ def preserve_upstream_non_openai_attributes(
     """
     Preserve non-OpenAI attributes from the original chunk.
     """
-    expected_keys = set(model_response.model_fields.keys()).union({"usage"})
+    # Access model_fields on the class, not the instance, to avoid Pydantic 2.11+ deprecation warnings
+    expected_keys = set(type(model_response).model_fields.keys()).union({"usage"})
     for key, value in original_chunk.model_dump().items():
         if key not in expected_keys:
             setattr(model_response, key, value)
@@ -284,3 +301,102 @@ def safe_deep_copy(data):
                 "litellm_parent_otel_span"
             ] = litellm_parent_otel_span
     return new_data
+
+
+def filter_exceptions_from_params(data: Any, max_depth: int = 20) -> Any:
+    """
+    Recursively filter out Exception objects and callable objects from dicts/lists.
+    
+    This is a defensive utility to prevent deepcopy failures when exception objects
+    are accidentally stored in parameter dictionaries (e.g., optional_params).
+    Also filters callable objects (functions) to prevent JSON serialization errors.
+    Exceptions and callables should not be stored in params - this function removes them.
+    
+    Args:
+        data: The data structure to filter (dict, list, or any other type)
+        max_depth: Maximum recursion depth to prevent infinite loops
+        
+    Returns:
+        Filtered data structure with Exception and callable objects removed, or None if the
+        entire input was an Exception or callable
+    """
+    if max_depth <= 0:
+        return data
+    
+    # Skip exception objects
+    if isinstance(data, Exception):
+        return None
+    # Skip callable objects (functions, methods, lambdas) but not classes (type objects)
+    if callable(data) and not isinstance(data, type):
+        return None
+    # Skip known non-serializable object types (Logging, etc.)
+    obj_type_name = type(data).__name__
+    if obj_type_name in ["Logging", "LiteLLMLoggingObj"]:
+        return None
+    
+    if isinstance(data, dict):
+        result: dict[str, Any] = {}
+        for k, v in data.items():
+            # Skip exception and callable values
+            if isinstance(v, Exception) or (callable(v) and not isinstance(v, type)):
+                continue
+            try:
+                filtered = filter_exceptions_from_params(v, max_depth - 1)
+                if filtered is not None:
+                    result[k] = filtered
+            except Exception:
+                # Skip values that cause errors during filtering
+                continue
+        return result
+    elif isinstance(data, list):
+        result_list: list[Any] = []
+        for item in data:
+            # Skip exception and callable items
+            if isinstance(item, Exception) or (callable(item) and not isinstance(item, type)):
+                continue
+            try:
+                filtered = filter_exceptions_from_params(item, max_depth - 1)
+                if filtered is not None:
+                    result_list.append(filtered)
+            except Exception:
+                # Skip items that cause errors during filtering
+                continue
+        return result_list
+    else:
+        return data
+
+
+def filter_internal_params(data: dict, additional_internal_params: Optional[set] = None) -> dict:
+    """
+    Filter out LiteLLM internal parameters that shouldn't be sent to provider APIs.
+    
+    This removes internal/MCP-related parameters that are used by LiteLLM internally
+    but should not be included in API requests to providers.
+    
+    Args:
+        data: Dictionary of parameters to filter
+        additional_internal_params: Optional set of additional internal parameter names to filter
+        
+    Returns:
+        Filtered dictionary with internal parameters removed
+    """
+    if not isinstance(data, dict):
+        return data
+    
+    # Known internal parameters that should never be sent to provider APIs
+    internal_params = {
+        "skip_mcp_handler",
+        "mcp_handler_context",
+        "_skip_mcp_handler",
+    }
+    
+    # Add any additional internal params if provided
+    if additional_internal_params:
+        internal_params.update(additional_internal_params)
+    
+    # Filter out internal parameters
+    return {
+        k: v
+        for k, v in data.items()
+        if k not in internal_params
+    }

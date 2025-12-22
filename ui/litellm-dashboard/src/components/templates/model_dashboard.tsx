@@ -660,7 +660,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
     }
 
     const fetchModelMap = async () => {
-      const data = await modelCostMap(accessToken);
+      const data = await modelCostMap();
       console.log(`received model cost map data: ${Object.keys(data)}`);
       setModelMap(data);
     };
@@ -1351,12 +1351,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                   />
                 </TabPanel>
                 <TabPanel>
-                  <CredentialsPanel
-                    accessToken={accessToken}
-                    uploadProps={uploadProps}
-                    credentialList={credentialsList}
-                    fetchCredentials={fetchCredentials}
-                  />
+                  <CredentialsPanel uploadProps={uploadProps} />
                 </TabPanel>
                 <TabPanel>
                   <PassThroughSettings
@@ -1364,6 +1359,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                     userRole={userRole}
                     userID={userID}
                     modelData={modelData}
+                    premiumUser={premiumUser}
                   />
                 </TabPanel>
                 <TabPanel>
@@ -1733,7 +1729,7 @@ const OldModelDashboard: React.FC<ModelDashboardProps> = ({
                       onReloadSuccess={() => {
                         // Refresh the model map after successful reload
                         const fetchModelMap = async () => {
-                          const data = await modelCostMap(accessToken);
+                          const data = await modelCostMap();
                           setModelMap(data);
                         };
                         fetchModelMap();
